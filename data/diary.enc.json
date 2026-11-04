@@ -1,0 +1,8 @@
+{
+  "format": "tidal-diary-data",
+  "version": 1,
+  "alg": "AES-GCM",
+  "iv": "dCm8I/a7oVKHSKSV",
+  "ct": "FMg9WqxNhK6EKqLJnK5XN8OUxdphJrvvmossmMh3/+AvRRogwDFSdEbacaxLScdXUvWBsWIV5jFjybJ3fQj6gAJtnfqejqBsmbULheQEmUGFeWYWWtSJkAAHdhjyhTPN2w==",
+  "updatedAt": "2026-11-04T16:47:47.159Z"
+}
