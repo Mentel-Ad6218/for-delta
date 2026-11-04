@@ -1,0 +1,29 @@
+{
+  "format": "tidal-diary-config",
+  "version": 1,
+  "site": {
+    "title": "给德尔塔小姐",
+    "siteDir": ""
+  },
+  "repo": {
+    "owner": "mentel-ad6218",
+    "repo": "for-delta",
+    "branch": "main",
+    "dataPath": "data/diary.enc.json",
+    "configPath": "config.json"
+  },
+  "kdf": {
+    "name": "PBKDF2-SHA256",
+    "iterations": 310000,
+    "salt": "+Do2uyTP6EZtMyfFAieKMQ=="
+  },
+  "wrappedKey": {
+    "iv": "tipJuBpffXAHkcCu",
+    "ct": "CSjaBLec7J14Pt6Qd3fW2QE794jT6Y30VbIyZV4NCbaq6qyP/5Vri06i4XqKEF0Z"
+  },
+  "secrets": {
+    "iv": "epeaHwsmvHXFMLZK",
+    "ct": "6pkFgauikOaPMyEZKJtbzl4pgfWYfaODIUofFHbfi5A7RkOGBPMSqXCq7w0aghoiu2KIYdHTTs3YJPrxqy7YOvEEexyeMOXTqMpZwlSEkErhHLe7xYpkMekJwFxd60qS46F6ULAvEYeHILHugBLiWM7P5ysL2nkR/RzWlcru2R7jEjw="
+  },
+  "createdAt": "2026-11-04T16:47:47.159Z"
+}
