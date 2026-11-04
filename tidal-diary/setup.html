@@ -1,0 +1,374 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="day">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=5"
+    />
+    <meta name="color-scheme" content="light" />
+    <meta name="theme-color" content="#eaf5ff" />
+    <meta name="referrer" content="no-referrer" />
+    <meta name="robots" content="noindex, nofollow, noarchive" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com https://raw.githubusercontent.com; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'"
+    />
+    <title>配置同步 · 潮汐手记</title>
+    <meta name="description" content="为潮汐手记配置 GitHub 加密同步。" />
+    <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="./css/style.css" />
+    <link rel="stylesheet" href="./css/setup.css" />
+  </head>
+  <body class="setup-page">
+    <svg class="svg-sprite" aria-hidden="true" width="0" height="0">
+      <defs>
+        <symbol id="i-arrow-left" viewBox="0 0 24 24">
+          <path d="M19 12H5" />
+          <path d="m11 6-6 6 6 6" />
+        </symbol>
+        <symbol id="i-arrow-right" viewBox="0 0 24 24">
+          <path d="M5 12h14" />
+          <path d="m13 6 6 6-6 6" />
+        </symbol>
+        <symbol id="i-eye" viewBox="0 0 24 24">
+          <path d="M2.8 12S6 5.8 12 5.8 21.2 12 21.2 12 18 18.2 12 18.2 2.8 12 2.8 12Z" />
+          <circle cx="12" cy="12" r="2.9" />
+        </symbol>
+        <symbol id="i-eye-off" viewBox="0 0 24 24">
+          <path d="M4 4l16 16" />
+          <path d="M9.8 6.2A9.7 9.7 0 0 1 12 5.8c6 0 9.2 6.2 9.2 6.2a16 16 0 0 1-3 3.7" />
+          <path d="M6.2 7.6A16.8 16.8 0 0 0 2.8 12S6 18.2 12 18.2a9.4 9.4 0 0 0 4.1-.9" />
+          <path d="M9.9 9.9a3 3 0 0 0 4.2 4.2" />
+        </symbol>
+        <symbol id="i-check" viewBox="0 0 24 24">
+          <path d="m5 12.5 4.5 4.5L19 7.5" />
+        </symbol>
+        <symbol id="i-key" viewBox="0 0 24 24">
+          <circle cx="8" cy="15.8" r="3.8" />
+          <path d="m10.8 13 8.7-8.7" />
+          <path d="m16 7.8 2.2 2.2M18.8 5l2.2 2.2" />
+        </symbol>
+        <symbol id="i-shield" viewBox="0 0 24 24">
+          <path d="M12 3.2 19 6v5.2c0 4.4-2.8 7.6-7 9.6-4.2-2-7-5.2-7-9.6V6Z" />
+          <path d="m9 12 2 2 4-4" />
+        </symbol>
+        <symbol id="i-download" viewBox="0 0 24 24">
+          <path d="M12 3.5v11" />
+          <path d="m7.5 10.5 4.5 4.5 4.5-4.5" />
+          <path d="M4.5 19.5h15" />
+        </symbol>
+        <symbol id="i-external" viewBox="0 0 24 24">
+          <path d="M14 4.5h5.5V10" />
+          <path d="M19.5 4.5 11 13" />
+          <path d="M18 13.5v5a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 18.5v-11A1.5 1.5 0 0 1 5.5 6h5" />
+        </symbol>
+        <symbol id="i-sparkle" viewBox="0 0 24 24">
+          <path d="M12 3.5c.7 5 2.8 7.1 7.8 7.8-5 .7-7.1 2.8-7.8 7.8-.7-5-2.8-7.1-7.8-7.8 5-.7 7.1-2.8 7.8-7.8Z" />
+        </symbol>
+        <symbol id="art-whale" viewBox="0 0 520 320">
+          <g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M66 190c12-58 65-100 139-103 57-2 106 19 143 56 9 9 21 15 35 15 25 0 45-18 63-41-10 32-8 59 7 85-23-13-46-18-69-11-15 5-29 14-42 25-39 32-87 48-144 48-67 0-118-25-142-74Z" opacity=".9" />
+            <path d="M442 117c16 11 29 25 39 42-16 4-30 3-43-3" opacity=".7" />
+            <path d="M243 224c-23 22-27 42-10 58 15-20 26-39 32-56" opacity=".8" />
+            <path d="M132 163c5-3 11-3 16 0" opacity=".9" />
+            <circle cx="140" cy="155" r="2.2" fill="currentColor" stroke="none" opacity=".9" />
+            <path d="M98 198c20 10 42 13 66 10" opacity=".55" />
+            <path d="M150 219c44 17 90 20 136 8" opacity=".35" />
+            <path d="M54 275c19 0 19-9 38-9s19 9 38 9 19-9 38-9 19 9 38 9 19-9 38-9 19 9 38 9 19-9 38-9 19 9 38 9" opacity=".4" />
+            <path d="M89 292c15 0 15-7 30-7s15 7 30 7 15-7 30-7 15 7 30 7 15-7 30-7 15 7 30 7 15-7 30-7 15 7 30 7 15-7 30-7" opacity=".22" />
+          </g>
+        </symbol>
+      </defs>
+    </svg>
+
+    <div class="ambient" aria-hidden="true">
+      <span class="ambient-orb orb-one"></span>
+      <span class="ambient-orb orb-two"></span>
+      <span class="ambient-orb orb-three"></span>
+      <span class="ambient-grain"></span>
+      <svg class="ambient-waves" viewBox="0 0 1440 320" preserveAspectRatio="none">
+        <path d="M0 220c160 0 160-32 320-32s160 32 320 32 160-32 320-32 160 32 320 32 160-32 320-32v132H0Z" />
+        <path d="M0 258c180 0 180-26 360-26s180 26 360 26 180-26 360-26 180 26 360 26 180-26 360-26v94H0Z" />
+      </svg>
+    </div>
+
+    <header class="setup-header">
+      <a class="brand" href="./">
+        <span class="brand-seal brand-seal-small">Δ</span>
+        <span class="brand-text">潮汐手记<small>CONFIGURATION</small></span>
+      </a>
+      <a class="setup-back" href="./">
+        <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
+        返回日记
+      </a>
+    </header>
+
+    <main class="setup-shell">
+      <aside class="setup-aside">
+        <div class="setup-cover">
+          <span class="setup-cover-eyebrow">TIDAL DIARY</span>
+          <strong>给日记<br />一把钥匙</strong>
+          <p>只需要配置一次。<br />以后在任何设备上，输入密码就能打开。</p>
+          <span class="setup-cover-seal">Δ</span>
+          <svg class="setup-cover-whale" viewBox="0 0 520 320" aria-hidden="true">
+            <use href="#art-whale"></use>
+          </svg>
+        </div>
+
+        <ol class="setup-steps">
+          <li><span>01</span><div><strong>设定一把钥匙</strong><small>密码只用于加密，不会上传</small></div></li>
+          <li><span>02</span><div><strong>连接 GitHub 仓库</strong><small>数据加密后写进你自己的仓库</small></div></li>
+          <li><span>03</span><div><strong>开始写第一页</strong><small>等待 Pages 部署完成即可</small></div></li>
+        </ol>
+
+        <div class="setup-aside-note">
+          <svg class="icon" aria-hidden="true"><use href="#i-shield"></use></svg>
+          <p>密码不会离开浏览器。GitHub 上只会看到 AES-256-GCM 密文。</p>
+        </div>
+      </aside>
+
+      <section class="setup-main">
+        <div id="existingBanner" class="setup-banner" hidden>
+          <strong>检测到这本日记已经配置过</strong>
+          <p id="existingText">重新生成会创建一把全新的主密钥，旧日记将无法用新密码打开。</p>
+        </div>
+
+        <div id="setupPanel" class="setup-paper">
+          <header class="setup-title">
+            <p class="eyebrow">ONE-TIME SETUP</p>
+            <h1>配置加密同步</h1>
+            <p>整个过程大约需要三分钟。配置完成后，这本网页日记就真正属于你了。</p>
+          </header>
+
+          <form id="setupForm" class="setup-form" autocomplete="off" novalidate>
+            <section class="setup-section">
+              <div class="section-head">
+                <span class="step-badge">01</span>
+                <div>
+                  <h2>设定一把钥匙</h2>
+                  <p>这将是以后每次打开日记时输入的密码。</p>
+                </div>
+              </div>
+
+              <div class="setup-fields">
+                <label class="setup-field">
+                  <span>日记名字</span>
+                  <input id="siteTitle" type="text" maxlength="24" value="潮汐手记" placeholder="潮汐手记" />
+                  <small>显示在书架和浏览器标题上。</small>
+                </label>
+
+                <label class="setup-field">
+                  <span>密码</span>
+                  <div class="setup-input-wrap">
+                    <input
+                      id="password"
+                      type="password"
+                      autocomplete="new-password"
+                      placeholder="至少 10 位，建议 12 位以上"
+                      minlength="10"
+                    />
+                    <button id="togglePassword" class="field-action" type="button" aria-label="显示密码">
+                      <svg class="icon" aria-hidden="true"><use href="#i-eye"></use></svg>
+                    </button>
+                  </div>
+                  <div class="strength-line setup-strength">
+                    <span class="strength-track"><i id="strengthBar"></i></span>
+                    <span id="strengthLabel">建议至少 12 位</span>
+                  </div>
+                </label>
+
+                <label class="setup-field">
+                  <span>再输入一次</span>
+                  <input
+                    id="passwordConfirm"
+                    type="password"
+                    autocomplete="new-password"
+                    placeholder="确认密码"
+                    minlength="10"
+                  />
+                </label>
+              </div>
+
+              <div class="setup-callout">
+                <svg class="icon" aria-hidden="true"><use href="#i-key"></use></svg>
+                <p><strong>请务必备份密码。</strong>日记会用这把密码加密。忘记密码时，没有任何人、任何服务可以帮你找回。</p>
+              </div>
+            </section>
+
+            <section class="setup-section">
+              <div class="section-head">
+                <span class="step-badge">02</span>
+                <div>
+                  <h2>连接 GitHub 仓库</h2>
+                  <p>日记密文会通过 GitHub API 写进这个仓库。</p>
+                </div>
+              </div>
+
+              <div class="setup-fields two-col">
+                <label class="setup-field">
+                  <span>GitHub 用户名</span>
+                  <input id="owner" type="text" placeholder="your-name" spellcheck="false" />
+                </label>
+                <label class="setup-field">
+                  <span>仓库名</span>
+                  <input id="repo" type="text" placeholder="my-diary" spellcheck="false" />
+                </label>
+                <label class="setup-field">
+                  <span>分支</span>
+                  <input id="branch" type="text" value="main" spellcheck="false" />
+                </label>
+                <label class="setup-field">
+                  <span>Pages 发布目录</span>
+                  <input id="siteDir" type="text" placeholder="留空表示仓库根目录" spellcheck="false" />
+                  <small>如果从 <code>docs/</code> 发布，请填 <code>docs</code>。</small>
+                </label>
+              </div>
+
+              <label class="setup-field token-field">
+                <span>GitHub Token</span>
+                <div class="setup-input-wrap token-wrap">
+                  <input
+                    id="token"
+                    type="password"
+                    placeholder="github_pat_... 或 ghp_..."
+                    spellcheck="false"
+                    autocomplete="off"
+                  />
+                  <button id="toggleToken" class="field-action" type="button" aria-label="显示 Token">
+                    <svg class="icon" aria-hidden="true"><use href="#i-eye"></use></svg>
+                  </button>
+                  <button id="verifyButton" class="btn btn-ghost btn-tiny" type="button">验证</button>
+                </div>
+                <small class="token-help">
+                  建议使用 Fine-grained Token：只选择这个仓库，并勾选
+                  <strong>Contents: Read and write</strong>。Token 会被加密后写进 config.json。
+                </small>
+              </label>
+
+              <div id="verifyStatus" class="verify-status" hidden>
+                <svg class="icon" aria-hidden="true"><use href="#i-check"></use></svg>
+                <span></span>
+              </div>
+
+              <div class="path-preview">
+                <div><span>配置</span><code id="configPathPreview">config.json</code></div>
+                <div><span>日记</span><code id="dataPathPreview">data/diary.enc.json</code></div>
+              </div>
+            </section>
+
+            <section class="setup-section">
+              <div class="section-head">
+                <span class="step-badge">03</span>
+                <div>
+                  <h2>写入并开始</h2>
+                  <p>会创建一份空的加密日记和配置文件。</p>
+                </div>
+              </div>
+
+              <div id="overwriteWrap" class="setup-warning" hidden>
+                <label class="check-line">
+                  <input id="overwriteCheck" type="checkbox" />
+                  <span>我知道这会覆盖现有的加密日记，并开始一本全新的日记。</span>
+                </label>
+              </div>
+
+              <label class="check-line ack-line">
+                <input id="ack" type="checkbox" />
+                <span>我明白：如果忘记密码，日记无法恢复。</span>
+              </label>
+
+              <p id="formError" class="setup-error" role="alert" hidden></p>
+
+              <button id="submitButton" class="btn btn-primary setup-submit" type="submit">
+                <svg class="icon" aria-hidden="true"><use href="#i-sparkle"></use></svg>
+                生成保险箱并写入仓库
+              </button>
+
+              <p class="setup-footnote">
+                点击后会把加密后的 <code>config.json</code> 与空日记写入仓库。GitHub Pages
+                通常需要一小会儿重新部署。
+              </p>
+
+              <div id="manualFallback" class="setup-fallback" hidden>
+                <strong>也可以手动放入仓库</strong>
+                <p>下载这两个文件，按对应路径上传到仓库即可。配置文件必须最后上传。</p>
+                <div>
+                  <button id="manualDataDownload" class="btn btn-ghost btn-tiny" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg>
+                    下载空日记
+                  </button>
+                  <button id="manualConfigDownload" class="btn btn-ghost btn-tiny" type="button">
+                    <svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg>
+                    下载 config.json
+                  </button>
+                </div>
+              </div>
+            </section>
+          </form>
+        </div>
+
+        <div id="successPanel" class="setup-paper success-panel" hidden>
+          <div class="success-mark">
+            <svg class="icon" aria-hidden="true"><use href="#i-check"></use></svg>
+            <span>Δ</span>
+          </div>
+          <p class="eyebrow">ALL SET</p>
+          <h1>钥匙已经放好了</h1>
+          <p class="success-copy">
+            配置文件和加密日记已经写入 <strong id="successRepo">你的仓库</strong>。等 GitHub Pages
+            完成部署后，回到首页，输入刚才的密码，就可以翻开第一页。
+          </p>
+
+          <div class="success-actions">
+            <a id="successSiteLink" class="btn btn-primary" href="./">
+              去打开日记
+              <svg class="icon" aria-hidden="true"><use href="#i-arrow-right"></use></svg>
+            </a>
+            <a
+              id="successConfigLink"
+              class="btn btn-ghost"
+              href="#"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              查看 config.json
+              <svg class="icon" aria-hidden="true"><use href="#i-external"></use></svg>
+            </a>
+          </div>
+
+          <div class="success-downloads">
+            <p>建议把配置文件另存一份。它不包含明文密码，但仍应妥善保管。</p>
+            <div>
+              <button id="downloadConfigButton" class="btn btn-ghost btn-tiny" type="button">
+                <svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg>
+                下载 config.json
+              </button>
+              <button id="downloadDataButton" class="btn btn-ghost btn-tiny" type="button">
+                <svg class="icon" aria-hidden="true"><use href="#i-download"></use></svg>
+                下载空日记
+              </button>
+            </div>
+          </div>
+
+          <div class="success-note">
+            <strong>接下来</strong>
+            <p>如果首页还显示“尚未配置”，请等待 1–2 分钟，然后刷新页面。GitHub Pages 的更新不是即时的。</p>
+          </div>
+
+          <button id="againButton" class="text-button" type="button">重新配置</button>
+        </div>
+
+        <p class="setup-legal">
+          潮汐手记是纯静态网页。GitHub Token 只用于写入你自己的仓库，不会发送到任何第三方服务器。
+        </p>
+      </section>
+    </main>
+
+    <noscript>
+      <div class="noscript">配置向导需要 JavaScript 才能在浏览器里生成密钥与写入 GitHub。</div>
+    </noscript>
+
+    <script type="module" src="./js/setup.js"></script>
+  </body>
+</html>
