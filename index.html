@@ -16,7 +16,7 @@
     <meta name="apple-mobile-web-app-title" content="潮汐手记" />
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com https://raw.githubusercontent.com; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://api.github.com https://raw.githubusercontent.com https://api.cloudinary.com https://res.cloudinary.com; font-src 'self' data:; object-src 'none'; base-uri 'self'; form-action 'self'"
     />
     <title>潮汐手记 · Tidal Diary</title>
     <meta
@@ -185,6 +185,11 @@
         <symbol id="i-wave" viewBox="0 0 24 24">
           <path d="M2.5 14.5c2.2 0 2.2-2 4.4-2s2.2 2 4.4 2 2.2-2 4.4-2 2.2 2 4.4 2" />
           <path d="M2.5 18c2.2 0 2.2-2 4.4-2s2.2 2 4.4 2 2.2-2 4.4-2 2.2 2 4.4 2" />
+        </symbol>
+        <symbol id="i-image" viewBox="0 0 24 24">
+          <rect x="3.2" y="4.5" width="17.6" height="15" rx="2.4" />
+          <circle cx="8.6" cy="9.6" r="1.5" />
+          <path d="m4.8 17.2 5-5 3.2 3 2.2-2.2 4.2 4.2" />
         </symbol>
         <symbol id="i-lock-now" viewBox="0 0 24 24">
           <rect x="5" y="10.5" width="14" height="9.5" rx="2.2" />
@@ -574,10 +579,29 @@
 
             <div class="editor-rule" aria-hidden="true"><span></span><i>Δ</i><span></span></div>
 
+            <div class="editor-media-bar">
+              <button id="addImageBtn" class="btn btn-ghost btn-tiny" type="button">
+                <svg class="icon" aria-hidden="true"><use href="#i-image"></use></svg>
+                添加配图
+              </button>
+              <span id="imageStatus" class="editor-media-status"></span>
+              <input
+                id="imageFileInput"
+                type="file"
+                accept="image/jpeg,image/png,image/webp,image/gif"
+                multiple
+                hidden
+              />
+            </div>
+
+            <div id="editorImages" class="editor-images" hidden>
+              <div id="editorImageList" class="editor-image-list"></div>
+            </div>
+
             <textarea
               id="editorBody"
               class="editor-body"
-              placeholder="今天发生了什么？&#10;&#10;可以试试：# 小标题、&gt; 引用、--- 分隔线"
+              placeholder="今天发生了什么？&#10;&#10;可以试试：# 小标题、&gt; 引用、--- 分隔线&#10;&#10;点“添加配图”，图片会插入到光标所在的位置"
               spellcheck="false"
             ></textarea>
 
@@ -587,12 +611,164 @@
               <span class="editor-delta" aria-hidden="true">Δ</span>
             </div>
           </div>
-          <p class="editor-tip">Ctrl / ⌘ + S 收好这一页 · 离开时会自动保存加密草稿</p>
+          <p class="editor-tip">Ctrl / ⌘ + S 收好这一页 · 正文里的【图1】是配图位置 · 配图加密存在本机或 Cloudinary</p>
+        </div>
+      </section>
+
+      <section id="adminView" class="admin-view" hidden>
+        <header class="admin-header">
+          <button id="adminBack" class="btn btn-ghost btn-tiny" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-arrow-left"></use></svg>
+            返回书架
+          </button>
+          <div class="admin-title">
+            <p class="eyebrow">ADMIN DESK</p>
+            <h1>管理员后台</h1>
+          </div>
+          <button id="adminExit" class="btn btn-ghost btn-tiny" type="button">
+            退出管理
+          </button>
+        </header>
+
+        <div class="admin-content">
+          <section class="admin-card admin-overview" aria-label="概览">
+            <div class="admin-stat">
+              <span>日记</span>
+              <strong id="adminEntryCount">0</strong>
+            </div>
+            <div class="admin-stat">
+              <span>总阅读</span>
+              <strong id="adminTotalViews">0</strong>
+            </div>
+            <div class="admin-stat">
+              <span>本机阅读</span>
+              <strong id="adminLocalViews">0</strong>
+            </div>
+            <div class="admin-stat">
+              <span>配图</span>
+              <strong id="adminImageCount">0</strong>
+            </div>
+          </section>
+
+          <section class="admin-card">
+            <div class="admin-card-head">
+              <div>
+                <h2>日记管理</h2>
+                <p class="admin-hint">
+                  阅读次数会先记在本机，随下一次保存或“同步阅读统计”写入云端。
+                </p>
+              </div>
+              <button id="adminStatsSync" class="btn btn-ghost btn-tiny" type="button">
+                同步阅读统计
+              </button>
+            </div>
+            <div id="adminList" class="admin-list"></div>
+          </section>
+
+          <section class="admin-card">
+            <div class="admin-card-head">
+              <div>
+                <h2>配图存储</h2>
+                <p class="admin-hint">
+                  新配图不再写进 GitHub 仓库。默认存在本机；配置 Cloudinary 后可跨设备。
+                </p>
+              </div>
+            </div>
+
+            <div class="admin-field">
+              <label for="imageProviderSelect">存储方式</label>
+              <select id="imageProviderSelect" class="select">
+                <option value="local">本机加密存储（不占仓库）</option>
+                <option value="cloudinary">Cloudinary（跨设备，不占仓库）</option>
+              </select>
+            </div>
+
+            <div id="cloudinaryFields" class="admin-cloudinary" hidden>
+              <label class="admin-field">
+                <span>Cloud name</span>
+                <input id="cloudinaryCloudName" type="text" autocomplete="off" spellcheck="false" placeholder="例如 dxxxxxx" />
+              </label>
+              <label class="admin-field">
+                <span>Unsigned upload preset</span>
+                <input id="cloudinaryPreset" type="text" autocomplete="off" spellcheck="false" placeholder="例如 tidal_diary" />
+              </label>
+              <label class="admin-field">
+                <span>文件夹</span>
+                <input id="cloudinaryFolder" type="text" autocomplete="off" spellcheck="false" placeholder="tidal-diary" />
+              </label>
+              <p class="admin-hint">
+                在 Cloudinary 控制台创建一个 <strong>Unsigned</strong> 上传预设。图片会先在浏览器里加密，
+                再作为 raw 文件上传；图床只能看到密文。免费额度与具体限制以 Cloudinary 官网为准。
+              </p>
+            </div>
+
+            <div class="admin-actions">
+              <button id="saveImageSettings" class="btn btn-primary btn-tiny" type="button">
+                保存配图设置
+              </button>
+              <button id="cleanupLocalImages" class="btn btn-ghost btn-tiny" type="button">
+                清理未引用本机配图
+              </button>
+            </div>
+            <p id="imageSettingsStatus" class="admin-status" role="status"></p>
+            <p id="localImageUsage" class="admin-hint">本机配图：—</p>
+            <p class="admin-warning">
+              本机存储只保存在当前浏览器里，清理浏览器数据会丢失；重要配图请使用 Cloudinary，
+              或定期保留完整仓库以外的备份。
+            </p>
+          </section>
+
+          <p class="admin-warning">
+            管理员密码只保护这个页面里的管理操作，不是服务器权限。能解锁日记的人，仍然能看到日记内容。
+          </p>
         </div>
       </section>
     </main>
 
     <div id="toastHost" class="toast-host" aria-live="polite" aria-atomic="false"></div>
+
+    <dialog id="imageViewer" class="image-viewer" aria-label="查看配图">
+      <button id="imageViewerClose" class="image-viewer-close" type="button" aria-label="关闭大图">
+        <svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg>
+      </button>
+      <figure class="image-viewer-figure">
+        <img id="imageViewerImg" alt="" />
+        <figcaption id="imageViewerCaption"></figcaption>
+      </figure>
+    </dialog>
+
+    <dialog id="adminLoginDialog" class="modal modal-small">
+      <div class="modal-head">
+        <div>
+          <p class="eyebrow">ADMIN DESK</p>
+          <h2>进入管理员后台</h2>
+        </div>
+        <button class="icon-btn" type="button" data-close-dialog aria-label="关闭">
+          <svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg>
+        </button>
+      </div>
+      <p class="modal-copy">
+        管理操作需要再确认一次。这个密码只用于页面内的管理，不是服务器账号。
+      </p>
+      <form id="adminLoginForm" class="stack-form">
+        <label>
+          <span>管理员密码</span>
+          <input
+            id="adminPasswordInput"
+            type="password"
+            inputmode="numeric"
+            autocomplete="off"
+            placeholder="我的手机密码"
+            required
+          />
+        </label>
+        <p id="adminLoginError" class="form-error" role="alert" hidden></p>
+        <div class="modal-actions">
+          <button class="btn btn-ghost" type="button" data-close-dialog>取消</button>
+          <button id="adminLoginSubmit" class="btn btn-primary" type="submit">进入后台</button>
+        </div>
+      </form>
+    </dialog>
 
     <dialog id="settingsDialog" class="modal settings-modal" tabindex="-1">
       <div class="modal-head">
@@ -693,6 +869,14 @@
         </section>
 
         <section class="settings-group">
+          <h3>管理员</h3>
+          <button id="adminEntryButton" class="data-button" type="button">
+            <svg class="icon" aria-hidden="true"><use href="#i-key"></use></svg>
+            <span><strong>管理员后台</strong><small>删除日记 · 阅读次数 · 配图存储</small></span>
+          </button>
+        </section>
+
+        <section class="settings-group">
           <h3>把日记带走</h3>
           <div class="settings-button-grid">
             <button id="exportEncryptedButton" class="data-button" type="button">
@@ -709,6 +893,10 @@
             </button>
           </div>
           <input id="importFileInput" type="file" accept=".json,application/json" hidden />
+          <p class="settings-note">
+            新配图不再写进 GitHub 仓库：默认加密保存在本机 IndexedDB，也可以在管理员后台切换到
+            Cloudinary。加密备份和 Markdown 仍然只包含文字。
+          </p>
         </section>
 
         <section class="settings-group about-group">
@@ -718,7 +906,7 @@
             也不会被发送给任何人。<span class="about-em">忘记密码，日记就无法找回。</span>
           </p>
           <p class="settings-version">
-            <span>潮汐手记 v1.0 · Δ</span>
+            <span>潮汐手记 v1.3 · Δ</span>
             <a href="./setup.html">重新配置同步</a>
           </p>
         </section>
