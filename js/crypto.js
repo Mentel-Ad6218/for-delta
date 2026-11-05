@@ -8,6 +8,8 @@
  *  - 所有密钥材料只在浏览器内存里出现，不发送给任何第三方。
  */
 
+import { normalizeSettings, normalizeStats } from './model.js?v=1.4.0';
+
 export const DEFAULT_ITERATIONS = 310_000;
 export const MIN_ITERATIONS = 120_000;
 export const MAX_ITERATIONS = 1_200_000;
@@ -17,6 +19,7 @@ export const AAD = Object.freeze({
   secrets: 'tidal-diary/secrets/v1',
   data: 'tidal-diary/data/v1',
   draft: 'tidal-diary/draft/v1',
+  image: 'tidal-diary/image/v1',
 });
 
 export class CryptoError extends Error {
@@ -244,6 +247,8 @@ export function createEmptyPayload() {
     version: 1,
     entries: [],
     tombstones: {},
+    settings: normalizeSettings(null),
+    stats: normalizeStats(null),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -261,6 +266,8 @@ export function normalizePayload(value) {
     version: 1,
     entries,
     tombstones,
+    settings: normalizeSettings(payload.settings),
+    stats: normalizeStats(payload.stats),
     updatedAt: typeof payload.updatedAt === 'string' ? payload.updatedAt : new Date().toISOString(),
   };
 }
@@ -311,6 +318,51 @@ export async function decryptPayload(masterKey, envelope) {
     if (error instanceof CryptoError) throw error;
     throw new CryptoError('BAD_DATA', '数据文件已损坏或不属于当前密码');
   }
+}
+
+/* --------------------------------- 配图加密 --------------------------------- */
+
+const IMAGE_MAGIC = new Uint8Array([0x54, 0x49, 0x44, 0x49, 0x4d, 0x47, 0x31]); // TIDIMG1
+const IMAGE_IV_LENGTH = 12;
+const IMAGE_HEADER_LENGTH = IMAGE_MAGIC.length + IMAGE_IV_LENGTH;
+const IMAGE_TAG_LENGTH = 16;
+
+function imageAad(id) {
+  return `${AAD.image}:${id}`;
+}
+
+/**
+ * 把一张已经压缩好的图片加密成可直接上传的二进制文件。
+ * 格式：TIDIMG1 | 12 字节 IV | AES-GCM 密文（含 16 字节 tag）
+ */
+export async function encryptImageBytes(masterKey, bytes, id) {
+  if (!id) throw new CryptoError('BAD_IMAGE', '配图缺少 ID');
+  const sealed = await encryptBytes(masterKey, bytes, imageAad(id));
+  const iv = base64ToBytes(sealed.iv);
+  const cipher = base64ToBytes(sealed.ct);
+  const packed = new Uint8Array(IMAGE_HEADER_LENGTH + cipher.length);
+  packed.set(IMAGE_MAGIC, 0);
+  packed.set(iv, IMAGE_MAGIC.length);
+  packed.set(cipher, IMAGE_HEADER_LENGTH);
+  return packed;
+}
+
+export async function decryptImageBytes(masterKey, packed, id) {
+  if (!(packed instanceof Uint8Array) || packed.length < IMAGE_HEADER_LENGTH + IMAGE_TAG_LENGTH) {
+    throw new CryptoError('BAD_IMAGE', '配图数据不完整');
+  }
+  for (let index = 0; index < IMAGE_MAGIC.length; index += 1) {
+    if (packed[index] !== IMAGE_MAGIC[index]) {
+      throw new CryptoError('BAD_IMAGE', '这不是潮汐手记的配图文件');
+    }
+  }
+  const iv = packed.slice(IMAGE_MAGIC.length, IMAGE_HEADER_LENGTH);
+  const cipher = packed.slice(IMAGE_HEADER_LENGTH);
+  return decryptBytes(
+    masterKey,
+    { iv: bytesToBase64(iv), ct: bytesToBase64(cipher) },
+    imageAad(id),
+  );
 }
 
 /* --------------------------------- 草稿加密 --------------------------------- */

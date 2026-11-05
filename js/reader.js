@@ -14,7 +14,8 @@ import {
   readingMinutes,
   weekdayOf,
   weatherOf,
-} from './model.js';
+} from './model.js?v=1.4.0';
+import { IMAGE_TOKEN_PATTERN } from './images.js?v=1.4.0';
 
 const PROGRESS_KEY = 'tidal.progress.v1';
 const SPLIT_TAGS = new Set(['P']);
@@ -63,6 +64,7 @@ export class Reader {
     this.entries = [];
     this.entry = null;
     this.entryIndex = 0;
+    this.images = new Map();
     this.pages = [];
     this.current = 0;
     this.step = 0;
@@ -82,6 +84,10 @@ export class Reader {
 
   setEntries(entries) {
     this.entries = Array.isArray(entries) ? entries : [];
+  }
+
+  setImages(images) {
+    this.images = images instanceof Map ? images : new Map();
   }
 
   get isOpen() {
@@ -132,6 +138,7 @@ export class Reader {
     this.saveProgress();
     this.entry = null;
     this.pages = [];
+    this.images = new Map();
     this.track.replaceChildren();
     this.closeChrome();
   }
@@ -503,6 +510,8 @@ export class Reader {
     if (weather) metaBits.push(weather.label);
     if (mood) metaBits.push(mood.label);
     if (entry.body) metaBits.push(`约 ${readingMinutes(entry.body)} 分钟`);
+    const imageCount = (String(entry.body || '').match(/【图\d+】/g) || []).length;
+    if (imageCount) metaBits.push(`${imageCount} 张配图`);
     meta.textContent = metaBits.join(' · ');
     const ornament = el('div', 'chapter-ornament');
     ornament.append(el('span'), el('i', '', 'Δ'), el('span'));
@@ -526,6 +535,12 @@ export class Reader {
         continue;
       }
       previousBlank = false;
+
+      const imageMatch = trimmed.match(IMAGE_TOKEN_PATTERN);
+      if (imageMatch) {
+        blocks.push(this.buildImageBlock(entry, imageMatch[1]));
+        continue;
+      }
 
       if (/^---+$/.test(trimmed) || /^\*{3,}$/.test(trimmed)) {
         const breakNode = el('div', 'scene-break');
@@ -581,6 +596,47 @@ export class Reader {
     }
 
     return blocks;
+  }
+
+  buildImageBlock(entry, key) {
+    const figure = el('figure', 'body-figure');
+    const ref = (entry.images || []).find((item) => String(item.key) === String(key));
+    const rendered = this.images.get(ref?.id || key);
+
+    if (!rendered?.url) {
+      figure.classList.add('is-missing');
+      const placeholder = el('div', 'body-image-missing');
+      placeholder.append(
+        el('span', 'body-image-missing-mark', 'Δ'),
+        el('span', '', ref ? '这张配图暂时打不开' : '这张配图已经不在了'),
+      );
+      figure.appendChild(placeholder);
+      return figure;
+    }
+
+    const button = el('button', 'body-image-button');
+    button.type = 'button';
+    button.dataset.viewImage = ref.id;
+    button.setAttribute(
+      'aria-label',
+      ref?.name ? `查看配图：${ref.name}` : '查看大图',
+    );
+
+    const image = document.createElement('img');
+    image.src = rendered.url;
+    image.alt = ref?.name || '日记配图';
+    image.loading = 'eager';
+    image.decoding = 'async';
+    const width = Number(rendered.width || ref?.width) || 0;
+    const height = Number(rendered.height || ref?.height) || 0;
+    if (width > 0) image.width = width;
+    if (height > 0) image.height = height;
+    button.appendChild(image);
+    figure.appendChild(button);
+
+    const hint = el('span', 'body-image-hint', '轻点查看');
+    figure.appendChild(hint);
+    return figure;
   }
 
   makeParagraph(block, text, continuation) {
@@ -664,6 +720,14 @@ export class Reader {
     window.addEventListener('pointercancel', () => this.cancelDrag());
 
     this.stage.addEventListener('click', (event) => this.onStageClick(event));
+    this.track.addEventListener('click', (event) => {
+      if (Date.now() < this.suppressClickUntil) return;
+      const imageButton = event.target.closest('[data-view-image]');
+      if (!imageButton) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.callbacks.onViewImage?.(imageButton.dataset.viewImage);
+    });
     this.stage.addEventListener('wheel', (event) => this.onWheel(event), { passive: false });
     window.addEventListener('keydown', (event) => this.onKeyDown(event));
 
@@ -680,7 +744,8 @@ export class Reader {
   onPointerDown(event) {
     if (!this.isOpen) return;
     if (event.pointerType === 'mouse' && event.button !== 0) return;
-    if (event.target.closest('button, a, input, select, textarea')) return;
+    const onImage = Boolean(event.target.closest('.body-image-button'));
+    if (!onImage && event.target.closest('button, a, input, select, textarea')) return;
     if (this.drag) return;
 
     this.drag = {

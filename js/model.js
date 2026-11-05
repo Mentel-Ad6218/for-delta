@@ -177,6 +177,147 @@ export function weatherOf(key) {
   return WEATHERS.find((weather) => weather.key === key) || null;
 }
 
+/* ------------------------------- 设置与阅读统计 ------------------------------ */
+
+export const DEFAULT_IMAGE_STORAGE = Object.freeze({
+  provider: 'local',
+  cloudName: '',
+  uploadPreset: '',
+  folder: 'tidal-diary',
+});
+
+function toIso(value) {
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? new Date(time).toISOString() : '';
+}
+
+function cleanText(value, limit) {
+  return String(value ?? '')
+    .replace(/[\u0000-\u001f\u007f]/g, '')
+    .trim()
+    .slice(0, limit);
+}
+
+export function normalizeSettings(raw) {
+  const source = raw && typeof raw === 'object' ? raw : {};
+  const image = source.imageStorage && typeof source.imageStorage === 'object'
+    ? source.imageStorage
+    : {};
+  return {
+    imageStorage: {
+      provider: image.provider === 'cloudinary' ? 'cloudinary' : 'local',
+      cloudName: cleanText(image.cloudName, 80),
+      uploadPreset: cleanText(image.uploadPreset, 120),
+      folder: cleanText(image.folder, 120) || DEFAULT_IMAGE_STORAGE.folder,
+    },
+    updatedAt: toIso(source.updatedAt),
+  };
+}
+
+export function emptyStats() {
+  return { version: 1, devices: {} };
+}
+
+export function normalizeStats(raw) {
+  const devices = {};
+  const source = raw?.devices;
+  if (!source || typeof source !== 'object') return emptyStats();
+  let count = 0;
+  for (const [deviceId, records] of Object.entries(source).slice(0, 80)) {
+    const cleanDevice = cleanText(deviceId, 120);
+    if (!cleanDevice || !records || typeof records !== 'object') continue;
+    const cleanRecords = {};
+    for (const [entryId, record] of Object.entries(records).slice(0, 12000)) {
+      if (count >= 30000) break;
+      const cleanEntry = cleanText(entryId, 120);
+      if (!cleanEntry || !record || typeof record !== 'object') continue;
+      const views = Math.max(0, Math.min(1_000_000_000, Math.floor(Number(record.views) || 0)));
+      if (!views) continue;
+      cleanRecords[cleanEntry] = {
+        views,
+        lastReadAt: toIso(record.lastReadAt),
+      };
+      count += 1;
+    }
+    if (Object.keys(cleanRecords).length) devices[cleanDevice] = cleanRecords;
+  }
+  return { version: 1, devices };
+}
+
+export function mergeStats(...sources) {
+  const merged = emptyStats();
+  for (const source of sources) {
+    const stats = normalizeStats(source);
+    for (const [deviceId, records] of Object.entries(stats.devices)) {
+      const target = merged.devices[deviceId] || (merged.devices[deviceId] = {});
+      for (const [entryId, record] of Object.entries(records)) {
+        const previous = target[entryId];
+        if (
+          !previous ||
+          record.views > previous.views ||
+          (record.views === previous.views && record.lastReadAt > previous.lastReadAt)
+        ) {
+          target[entryId] = { ...record };
+        }
+      }
+    }
+  }
+  return merged;
+}
+
+export function entryViews(stats, entryId) {
+  let total = 0;
+  for (const records of Object.values(normalizeStats(stats).devices)) {
+    total += records[entryId]?.views || 0;
+  }
+  return total;
+}
+
+export function deviceViews(stats, entryId, deviceId) {
+  return normalizeStats(stats).devices[deviceId]?.[entryId]?.views || 0;
+}
+
+export function recordStatsView(stats, deviceId, entryId, at = new Date().toISOString()) {
+  const base = normalizeStats(stats);
+  const device = { ...(base.devices[deviceId] || {}) };
+  const previous = device[entryId];
+  device[entryId] = {
+    views: (previous?.views || 0) + 1,
+    lastReadAt: toIso(at) || new Date().toISOString(),
+  };
+  return {
+    version: 1,
+    devices: { ...base.devices, [deviceId]: device },
+  };
+}
+
+export function removeStatsForEntry(stats, entryId) {
+  const base = normalizeStats(stats);
+  const devices = {};
+  for (const [deviceId, records] of Object.entries(base.devices)) {
+    const next = { ...records };
+    delete next[entryId];
+    if (Object.keys(next).length) devices[deviceId] = next;
+  }
+  return { version: 1, devices };
+}
+
+export function updateImageStorageSettings(payload, patch) {
+  const current = normalizeSettings(payload?.settings);
+  const next = normalizeSettings({
+    imageStorage: {
+      ...current.imageStorage,
+      ...(patch && typeof patch === 'object' ? patch : {}),
+    },
+    updatedAt: new Date().toISOString(),
+  });
+  return normalizePayloadLocal({
+    ...payload,
+    settings: next,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
 /* --------------------------------- 合并逻辑 --------------------------------- */
 
 function toMs(value) {
@@ -207,11 +348,24 @@ export function mergePayloads(base, incoming) {
     if (entry && toMs(entry.updatedAt) <= deletedAt) entries.delete(id);
   }
 
+  let settings = normalizeSettings(null);
+  let settingsTime = -1;
+  for (const source of sources) {
+    const candidate = normalizeSettings(source.settings);
+    const time = toMs(candidate.updatedAt);
+    if (time >= settingsTime) {
+      settings = candidate;
+      settingsTime = time;
+    }
+  }
+
   const mergedEntries = sortEntries([...entries.values()]);
+  const stats = mergeStats(...sources.map((source) => source.stats));
   const latest = Math.max(
     ...sources.map((source) => toMs(source.updatedAt)),
     ...mergedEntries.map((entry) => toMs(entry.updatedAt)),
     ...Object.values(tombstones),
+    toMs(settings.updatedAt),
     0,
   );
 
@@ -219,6 +373,8 @@ export function mergePayloads(base, incoming) {
     version: 1,
     entries: mergedEntries,
     tombstones,
+    settings,
+    stats,
     updatedAt: latest ? new Date(latest).toISOString() : new Date().toISOString(),
   };
 }
@@ -247,6 +403,8 @@ function contentSignature(payload) {
     tombstones: Object.fromEntries(
       Object.entries(payload.tombstones || {}).sort(([a], [b]) => a.localeCompare(b)),
     ),
+    // 阅读统计不触发同步，避免每读一次就产生一个提交。
+    imageStorage: normalizeSettings(payload.settings).imageStorage,
   });
 }
 
@@ -259,6 +417,8 @@ export function upsertEntry(payload, entry) {
     version: 1,
     entries: sortEntries([...entries.values()]),
     tombstones,
+    settings: normalizeSettings(payload.settings),
+    stats: normalizeStats(payload.stats),
     updatedAt: new Date().toISOString(),
   });
 }
@@ -270,6 +430,8 @@ export function deleteEntry(payload, id) {
     version: 1,
     entries,
     tombstones,
+    settings: normalizeSettings(payload.settings),
+    stats: removeStatsForEntry(payload.stats, id),
     updatedAt: new Date().toISOString(),
   });
 }
@@ -279,6 +441,8 @@ function normalizePayloadLocal(payload) {
     version: 1,
     entries: payload.entries || [],
     tombstones: payload.tombstones || {},
+    settings: normalizeSettings(payload.settings),
+    stats: normalizeStats(payload.stats),
     updatedAt: payload.updatedAt || new Date().toISOString(),
   };
 }

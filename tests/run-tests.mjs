@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_ITERATIONS,
   createVault,
+  decryptImageBytes,
   decryptPayload,
+  encryptImageBytes,
   encryptPayload,
   openSecrets,
   rewrapMasterKey,
@@ -12,7 +14,16 @@ import {
   unlockVault,
 } from '../js/crypto.js';
 import { DiaryRepository } from '../js/repository.js';
-import { deleteEntry, hasMeaningfulDifference, mergePayloads, upsertEntry } from '../js/model.js';
+import {
+  deleteEntry,
+  emptyStats,
+  entryViews,
+  hasMeaningfulDifference,
+  mergePayloads,
+  mergeStats,
+  recordStatsView,
+  upsertEntry,
+} from '../js/model.js';
 import { demoEntries } from '../js/demo.js';
 
 class MemoryStorage {
@@ -55,6 +66,7 @@ function makeConfig(vault) {
 class FakeClient {
   constructor(initial = null) {
     this.file = initial;
+    this.imageFiles = new Map();
     this.shaCounter = 0;
     this.putCalls = 0;
     this.failNextPut = false;
@@ -63,6 +75,17 @@ class FakeClient {
     return this.file ? { ...this.file } : null;
   }
   async readPublicFile() {
+    return null;
+  }
+  async putBinaryFile(owner, repo, path, branch, bytes) {
+    this.imageFiles.set(path, new Uint8Array(bytes));
+    return { content: { sha: `image-${this.imageFiles.size}` } };
+  }
+  async getBinaryFile(owner, repo, path) {
+    const bytes = this.imageFiles.get(path);
+    return bytes ? { bytes: new Uint8Array(bytes), sha: `image-${path}` } : null;
+  }
+  async readPublicBinaryFile() {
     return null;
   }
   async putFile(owner, repo, path, branch, content, options) {
@@ -98,6 +121,21 @@ assert.equal(openedSecrets.token, 'ghp_test');
 await assert.rejects(
   () => unlockVault('wrong-password-2026', config.kdf, config.wrappedKey),
   (error) => error.code === 'WRONG_PASSWORD',
+);
+
+// 配图二进制加密 / 解密
+const imageBytes = new Uint8Array(2048);
+for (let i = 0; i < imageBytes.length; i += 1) imageBytes[i] = i % 256;
+const packedImage = await encryptImageBytes(vault.masterKey, imageBytes, 'image-test');
+const unpackedImage = await decryptImageBytes(vault.masterKey, packedImage, 'image-test');
+assert.deepEqual(Array.from(unpackedImage), Array.from(imageBytes));
+await assert.rejects(
+  () => decryptImageBytes(vault.masterKey, packedImage, 'other-image'),
+  (error) => error.code === 'DECRYPT_FAILED',
+);
+await assert.rejects(
+  () => decryptImageBytes(vault.masterKey, packedImage.slice(0, 20), 'image-test'),
+  (error) => error.code === 'BAD_IMAGE',
 );
 
 const payload = {
@@ -146,13 +184,57 @@ assert.equal(hasMeaningfulDifference(merged, mergedAfterDelete), true);
 localStorage.clear();
 const initialEnvelope = await encryptPayload(vault.masterKey, payload);
 const fake = new FakeClient({ text: JSON.stringify(initialEnvelope), sha: 'remote-1' });
-const repo = new DiaryRepository({ config, token: 'ghp_test', masterKey: vault.masterKey });
+const repo = new DiaryRepository({
+  config,
+  token: 'ghp_test',
+  masterKey: vault.masterKey,
+});
 repo.client = fake;
 
 const loaded = await repo.load();
 assert.equal(loaded.payload.entries.length, payload.entries.length);
 assert.equal(loaded.offline, false);
 assert.equal(loaded.pending, false);
+
+// 阅读统计按设备合并，不会因为统计变化触发云端写入
+const statsA = recordStatsView(emptyStats(), 'dev-a', 'entry-1');
+const statsA2 = recordStatsView(statsA, 'dev-a', 'entry-1');
+const statsB = recordStatsView(emptyStats(), 'dev-b', 'entry-1');
+const statsMerged = mergeStats(statsA2, statsB);
+assert.equal(entryViews(statsMerged, 'entry-1'), 3);
+assert.equal(hasMeaningfulDifference(payload, { ...payload, stats: statsA2 }), false);
+const settingsPayload = mergePayloads(
+  {
+    ...payload,
+    settings: {
+      imageStorage: { provider: 'local', cloudName: '', uploadPreset: '', folder: 'a' },
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    },
+    stats: statsA2,
+  },
+  {
+    ...payload,
+    settings: {
+      imageStorage: { provider: 'cloudinary', cloudName: 'demo', uploadPreset: 'preset', folder: 'b' },
+      updatedAt: '2026-02-01T00:00:00.000Z',
+    },
+    stats: statsB,
+  },
+);
+assert.equal(settingsPayload.settings.imageStorage.provider, 'cloudinary');
+assert.equal(entryViews(settingsPayload.stats, 'entry-1'), 3);
+assert.equal(entryViews(deleteEntry(settingsPayload, 'entry-1').stats, 'entry-1'), 0);
+
+// 兼容旧版仓库内配图（新增配图功能已停用，只保留只读显示）
+fake.imageFiles.set('data/images/image-legacy.bin', packedImage);
+const legacyImage = await repo.loadImage({
+  id: 'image-test',
+  path: 'data/images/image-legacy.bin',
+  width: 10,
+  height: 10,
+});
+assert.ok(legacyImage.url.startsWith('blob:'));
+repo.clearImageCache();
 
 const added = {
   id: 'test-new-entry',

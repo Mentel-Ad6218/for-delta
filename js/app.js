@@ -8,19 +8,22 @@
 import {
   CryptoError,
   DEFAULT_ITERATIONS,
+  base64ToBytes,
+  bytesToBase64,
   decryptDraft,
   decryptPayload,
   encryptDraft,
   encryptPayload,
   isDataEnvelope,
   normalizePassword,
+  normalizePayload,
   openSecrets,
   passwordScore,
   rewrapMasterKey,
   sealSecrets,
   unlockVault,
   zeroBytes,
-} from './crypto.js';
+} from './crypto.js?v=1.4.0';
 import {
   cacheConfig,
   ConfigError,
@@ -28,7 +31,7 @@ import {
   fetchConfig,
   lastSyncAt,
   readCachedConfig,
-} from './repository.js';
+} from './repository.js?v=1.4.0';
 import {
   MOODS,
   WEATHERS,
@@ -44,8 +47,11 @@ import {
   greeting,
   groupByMonth,
   moodOf,
+  normalizeSettings,
+  normalizeStats,
   parseDateKey,
   readingMinutes,
+  recordStatsView,
   relativeDay,
   sortEntries,
   streakDays,
@@ -55,12 +61,14 @@ import {
   weekdayOf,
   weatherOf,
   mergePayloads,
-} from './model.js';
-import { GitHubClient } from './github.js';
-import { demoPayload } from './demo.js';
-import { Reader } from './reader.js';
+} from './model.js?v=1.4.0';
+import { GitHubClient } from './github.js?v=1.4.0';
+import { extractImageKeys } from './images.js?v=1.4.0';
+import { demoPayload } from './demo.js?v=1.4.0';
+import { Reader } from './reader.js?v=1.4.0';
 
 const $ = (id) => document.getElementById(id);
+const APP_VERSION = '1.4.0';
 
 const STORAGE_KEYS = {
   theme: 'tidal.theme.v1',
@@ -68,6 +76,7 @@ const STORAGE_KEYS = {
   autoLock: 'tidal.autoLock.v1',
   draft: 'tidal.draft.v1',
   lastEntry: 'tidal.lastEntry.v1',
+  device: 'tidal.device.v1',
 };
 
 const THEME_COLORS = {
@@ -116,7 +125,26 @@ const state = {
   unlockAttempts: 0,
   bootConfigured: false,
   fontReflowTimer: 0,
+  imagePreviews: new Map(),
+  imagePreviewErrors: new Set(),
+  deviceId: '',
+  adminMode: false,
+  adminAttempts: 0,
+  adminLockedUntil: 0,
+  statsDirty: false,
+  statsCacheTimer: 0,
+  statsCachePromise: null,
 };
+
+const MAX_IMAGES_PER_ENTRY = 24;
+
+// 管理员密码只做页面内的二次确认，不参与日记加密。
+// PBKDF2-SHA256 / 180,000 次；只保存校验值，不保存明文。
+const ADMIN_KDF = Object.freeze({
+  salt: '6mQBImAszO+QIaeZFVJSJg==',
+  hash: 'TJRfokheCD7+k9VHUwahTklp2A8u0kFp0fnnXuxB7jM=',
+  iterations: 180000,
+});
 
 const dom = {
   boot: $('bootScreen'),
@@ -217,6 +245,29 @@ const dom = {
   editorCount: $('editorCount'),
   draftStatus: $('draftStatus'),
 
+  imageViewer: $('imageViewer'),
+  imageViewerImg: $('imageViewerImg'),
+  imageViewerCaption: $('imageViewerCaption'),
+  imageViewerClose: $('imageViewerClose'),
+
+  adminView: $('adminView'),
+  adminBack: $('adminBack'),
+  adminExit: $('adminExit'),
+  adminEntryCount: $('adminEntryCount'),
+  adminTotalViews: $('adminTotalViews'),
+  adminLocalViews: $('adminLocalViews'),
+  adminWordCount: $('adminWordCount'),
+  adminList: $('adminList'),
+  adminStatsSync: $('adminStatsSync'),
+  adminModeName: $('adminModeName'),
+  adminModeToggle: $('adminModeToggle'),
+  adminPanelButton: $('adminPanelButton'),
+  adminLoginDialog: $('adminLoginDialog'),
+  adminLoginForm: $('adminLoginForm'),
+  adminPasswordInput: $('adminPasswordInput'),
+  adminLoginError: $('adminLoginError'),
+  adminLoginSubmit: $('adminLoginSubmit'),
+
   settingsDialog: $('settingsDialog'),
   themeCards: $('themeCards'),
   settingsFontMinus: $('settingsFontMinus'),
@@ -267,6 +318,7 @@ const dom = {
 
   infoDialog: $('infoDialog'),
   toastHost: $('toastHost'),
+  appVersion: $('appVersion'),
 };
 
 let reader = null;
@@ -282,6 +334,12 @@ async function boot() {
   buildPickers();
   initReader();
   bindEvents();
+  window.__TIDAL_APP_READY__ = true;
+  const loadError = document.getElementById('appLoadError');
+  if (loadError) loadError.hidden = true;
+  if (dom.appVersion) {
+    dom.appVersion.textContent = `潮汐手记 v${APP_VERSION} · 脚本已加载`;
+  }
   registerServiceWorker();
 
   const params = new URLSearchParams(window.location.search);
@@ -567,6 +625,10 @@ async function enterApp() {
   state.mode = state.demoMode ? 'demo' : 'cloud';
   state.lastActivity = Date.now();
   state.currentReaderId = null;
+  state.deviceId = getDeviceId();
+  state.payload = normalizePayload(state.payload);
+  state.statsDirty = false;
+  state.adminMode = false;
 
   dom.lock.hidden = true;
   dom.lock.classList.remove('is-visible');
@@ -738,6 +800,9 @@ function buildEntryRow(entry, index) {
   );
   const weather = weatherOf(entry.weather);
   if (weather) meta.appendChild(textSpan(`${weather.glyph} ${weather.label}`));
+  if (Array.isArray(entry.images) && entry.images.length) {
+    meta.appendChild(textSpan(`${entry.images.length} 张配图`));
+  }
   copy.append(top, body, meta);
 
   const edit = document.createElement('button');
@@ -878,6 +943,7 @@ function setView(name) {
   dom.shelf.hidden = name !== 'shelf';
   dom.reader.hidden = name !== 'reader';
   dom.editor.hidden = name !== 'editor';
+  dom.adminView.hidden = name !== 'admin';
   dom.header.hidden = name !== 'shelf';
   document.body.dataset.view = name;
   if (name !== 'shelf') closeSearch(true);
@@ -943,6 +1009,7 @@ function initReader() {
       onNextEntry: (index) => openAdjacentEntry(index + 1, 'next'),
       onPrevEntry: (index) => openAdjacentEntry(index - 1, 'prev'),
       onOpenEntry: (id) => openReader(id, { history: 'replace' }),
+      onViewImage: (id) => openReaderImageViewer(id),
       onBoundary: (message) => toast(message, { tone: 'info', duration: 1800 }),
       onProgress: ({ entry }) => {
         try {
@@ -974,8 +1041,11 @@ async function openReader(entryId, { history = 'push', direction = '', atEnd = f
   closeReaderPopovers();
   document.body.classList.add('reader-open');
   try {
+    const imageMap = await resolveEntryImages(entry);
+    reader.setImages(imageMap);
     const opened = await reader.open(entryId, { direction });
     if (!opened) throw new Error('无法打开这一页');
+    recordEntryView(entryId);
     if (atEnd) reader.goLast();
     state.currentReaderId = entryId;
     if (history === 'push') navigate(`#/read/${encodeURIComponent(entryId)}`, { replace: false });
@@ -1007,6 +1077,7 @@ async function openAdjacentEntry(index, direction) {
 
 function closeReaderView() {
   if (!reader) return;
+  closeImageViewer();
   reader.close();
   state.currentReaderId = null;
   document.body.classList.remove('reader-open');
@@ -1143,11 +1214,23 @@ async function openEditor(entryId = null, { history = 'push', returnTo = 'shelf'
     toast('没有找到这一篇。', { tone: 'warn' });
     return;
   }
+  if (existing && !state.adminMode) {
+    requireAdminMode();
+    if (state.view === 'reader') {
+      reader?.close();
+      state.currentReaderId = null;
+      document.body.classList.remove('reader-open');
+    }
+    setView('shelf');
+    renderShelf();
+    navigate('#/', { replace: true });
+    return false;
+  }
 
   const draft = state.loadedDraft;
   let useDraft = false;
   let content = existing
-    ? { ...existing }
+    ? { ...existing, images: Array.isArray(existing.images) ? [...existing.images] : [] }
     : {
         id: null,
         date: todayKey(),
@@ -1155,18 +1238,23 @@ async function openEditor(entryId = null, { history = 'push', returnTo = 'shelf'
         body: '',
         mood: 'calm',
         weather: '',
+        images: [],
         createdAt: new Date().toISOString(),
         updatedAt: null,
       };
 
   if (draft && draft.entryId === (existing?.id || null)) {
     const baseMatches = !existing || draft.baseUpdatedAt === existing.updatedAt;
+    const draftImages = Array.isArray(draft.images)
+      ? draft.images
+      : existing?.images || [];
     const differs =
       draft.title !== (existing?.title || '') ||
       draft.body !== (existing?.body || '') ||
       draft.mood !== (existing?.mood || '') ||
       draft.weather !== (existing?.weather || '') ||
-      draft.date !== (existing?.date || todayKey());
+      draft.date !== (existing?.date || todayKey()) ||
+      JSON.stringify(draftImages) !== JSON.stringify(existing?.images || []);
     if (baseMatches && differs && (draft.title || draft.body)) {
       content = {
         ...content,
@@ -1175,6 +1263,7 @@ async function openEditor(entryId = null, { history = 'push', returnTo = 'shelf'
         mood: draft.mood || content.mood,
         weather: draft.weather || '',
         date: draft.date || content.date,
+        images: draftImages,
       };
       useDraft = true;
     }
@@ -1190,8 +1279,17 @@ async function openEditor(entryId = null, { history = 'push', returnTo = 'shelf'
     body: content.body || '',
     mood: content.mood || '',
     weather: content.weather || '',
+    images: Array.isArray(content.images)
+      ? content.images.map((ref, index) => ({
+          ...ref,
+          key: Number(ref.key) || index + 1,
+        }))
+      : [],
     dirty: useDraft,
     saving: false,
+    imageBusy: false,
+    imageInsertPos: null,
+    bodyTouched: false,
   };
 
   setView('editor');
@@ -1262,6 +1360,78 @@ function autoGrowEditor() {
   dom.editorBody.style.height = `${Math.max(window.innerHeight * 0.45, dom.editorBody.scrollHeight + 8)}px`;
 }
 
+/* --------------------------------- 配图逻辑 -------------------------------- */
+
+async function resolveImageRef(ref) {
+  if (!ref?.id) return '';
+  const cached = state.imagePreviews.get(ref.id);
+  if (cached) return cached;
+  if (state.demoMode && ref.localUrl) {
+    state.imagePreviews.set(ref.id, ref.localUrl);
+    return ref.localUrl;
+  }
+  if (!state.repo) return '';
+  try {
+    const loaded = await state.repo.loadImage(ref);
+    state.imagePreviews.set(ref.id, loaded.url);
+    state.imagePreviewErrors.delete(ref.id);
+    return loaded.url;
+  } catch (error) {
+    console.warn('配图读取失败', error);
+    state.imagePreviewErrors.add(ref.id);
+    return '';
+  }
+}
+
+async function resolveEntryImages(entry) {
+  const map = new Map();
+  const refs = Array.isArray(entry.images) ? entry.images : [];
+  await Promise.all(
+    refs.map(async (ref) => {
+      const url = await resolveImageRef(ref);
+      map.set(ref.id, { ...ref, url });
+    }),
+  );
+  return map;
+}
+
+function openReaderImageViewer(id) {
+  const image = reader?.images?.get(id);
+  if (!image?.url) {
+    toast('这张配图暂时无法打开。', { tone: 'warn' });
+    return;
+  }
+  openImageViewer(image.url, image.name);
+}
+
+function openImageViewer(url, name = '') {
+  if (!url) {
+    toast('这张图片还没有准备好。', { tone: 'warn' });
+    return;
+  }
+  dom.imageViewerImg.src = url;
+  dom.imageViewerImg.alt = name || '日记配图';
+  dom.imageViewerCaption.textContent = name || '';
+  dom.imageViewerCaption.hidden = !name;
+  if (!dom.imageViewer.open) dom.imageViewer.showModal();
+}
+
+function closeImageViewer() {
+  if (dom.imageViewer.open) dom.imageViewer.close();
+}
+
+function clearImagePreviews() {
+  for (const url of state.imagePreviews.values()) {
+    try {
+      URL.revokeObjectURL(url);
+    } catch {
+      /* 忽略 */
+    }
+  }
+  state.imagePreviews.clear();
+  state.imagePreviewErrors.clear();
+}
+
 function updateEditorFromDom({ markDirty = true } = {}) {
   if (!state.editor) return;
   state.editor.title = dom.editorTitle.value;
@@ -1285,6 +1455,21 @@ function scheduleDraft() {
   }, 700);
 }
 
+function serializeImageRef(ref) {
+  const clean = {
+    id: ref.id,
+    key: Number(ref.key) || 1,
+    path: ref.path || '',
+    width: ref.width || 0,
+    height: ref.height || 0,
+    mime: ref.mime || 'image/webp',
+    size: ref.size || 0,
+    name: ref.name || '配图',
+  };
+  if (state.demoMode && ref.localUrl) clean.localUrl = ref.localUrl;
+  return clean;
+}
+
 async function saveDraftNow() {
   if (!state.editor || !state.editor.dirty) return;
   const editor = state.editor;
@@ -1296,6 +1481,7 @@ async function saveDraftNow() {
     body: editor.body,
     mood: editor.mood,
     weather: editor.weather,
+    images: (editor.images || []).map(serializeImageRef),
     savedAt: new Date().toISOString(),
   };
   const seq = ++state.draftSeq;
@@ -1350,6 +1536,397 @@ function formatClock(date) {
   return `${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`;
 }
 
+function getDeviceId() {
+  try {
+    const saved = localStorage.getItem(STORAGE_KEYS.device);
+    if (saved && /^[A-Za-z0-9_-]{8,120}$/.test(saved)) return saved;
+    const id = uid();
+    localStorage.setItem(STORAGE_KEYS.device, id);
+    return id;
+  } catch {
+    if (!state.deviceId) state.deviceId = uid();
+    return state.deviceId;
+  }
+}
+
+function recordEntryView(entryId) {
+  if (!state.payload || !entryId) return;
+  if (!state.deviceId) state.deviceId = getDeviceId();
+  const stats = recordStatsView(state.payload.stats, state.deviceId, entryId);
+  state.payload = { ...state.payload, stats };
+  state.statsDirty = true;
+  scheduleStatsCache();
+}
+
+function scheduleStatsCache() {
+  window.clearTimeout(state.statsCacheTimer);
+  state.statsCacheTimer = window.setTimeout(() => {
+    flushStatsCacheNow();
+  }, 650);
+}
+
+function flushStatsCacheNow() {
+  window.clearTimeout(state.statsCacheTimer);
+  state.statsCacheTimer = 0;
+  if (!state.repo || !state.payload) return Promise.resolve();
+  const snapshot = state.payload;
+  state.statsCachePromise = (state.statsCachePromise || Promise.resolve())
+    .catch(() => {})
+    .then(async () => {
+      if (!state.repo) return;
+      try {
+        await state.repo.cachePayload(snapshot);
+      } catch {
+        /* 本机缓存失败不影响阅读 */
+      }
+    });
+  return state.statsCachePromise;
+}
+
+/* ------------------------------- 管理员后台 -------------------------------- */
+
+async function verifyAdminPassword(password) {
+  if (!crypto?.subtle) return false;
+  try {
+    const material = await crypto.subtle.importKey(
+      'raw',
+      new TextEncoder().encode(normalizePassword(password)),
+      'PBKDF2',
+      false,
+      ['deriveBits'],
+    );
+    const bits = await crypto.subtle.deriveBits(
+      {
+        name: 'PBKDF2',
+        salt: base64ToBytes(ADMIN_KDF.salt),
+        iterations: ADMIN_KDF.iterations,
+        hash: 'SHA-256',
+      },
+      material,
+      256,
+    );
+    const actual = new Uint8Array(bits);
+    const expected = base64ToBytes(ADMIN_KDF.hash);
+    if (actual.length !== expected.length) return false;
+    let diff = 0;
+    for (let i = 0; i < actual.length; i += 1) diff |= actual[i] ^ expected[i];
+    return diff === 0;
+  } catch {
+    return false;
+  }
+}
+
+function requireAdminMode() {
+  if (state.adminMode) return true;
+  toast('只有管理员可以使用该功能。请先在设置中开启管理员模式。', {
+    tone: 'warn',
+    duration: 4200,
+  });
+  return false;
+}
+
+function openAdminLogin() {
+  if (!state.authenticated) return;
+  if (state.adminMode) {
+    openSettings();
+    return;
+  }
+  if (dom.settingsDialog.open) dom.settingsDialog.close();
+  dom.adminPasswordInput.value = '';
+  dom.adminLoginError.hidden = true;
+  dom.adminLoginError.textContent = '';
+  dom.adminLoginSubmit.disabled = false;
+  dom.adminLoginSubmit.textContent = '开启管理员模式';
+  if (!dom.adminLoginDialog.open) dom.adminLoginDialog.showModal();
+  window.setTimeout(() => dom.adminPasswordInput.focus(), 80);
+}
+
+async function handleAdminLogin(event) {
+  event.preventDefault();
+  const now = Date.now();
+  if (now < state.adminLockedUntil) {
+    showAdminLoginError(
+      `尝试次数太多，请 ${Math.ceil((state.adminLockedUntil - now) / 1000)} 秒后再试。`,
+    );
+    return;
+  }
+  const password = dom.adminPasswordInput.value;
+  if (!password) {
+    showAdminLoginError('请输入管理员密码。');
+    dom.adminPasswordInput.focus();
+    return;
+  }
+
+  dom.adminLoginSubmit.disabled = true;
+  dom.adminLoginSubmit.textContent = '正在确认…';
+  try {
+    const ok = await verifyAdminPassword(password);
+    if (!ok) {
+      state.adminAttempts += 1;
+      if (state.adminAttempts >= 5) {
+        state.adminAttempts = 0;
+        state.adminLockedUntil = Date.now() + 30_000;
+        showAdminLoginError('尝试次数太多，请 30 秒后再试。');
+      } else {
+        showAdminLoginError('管理员密码不正确。');
+      }
+      dom.adminPasswordInput.value = '';
+      dom.adminPasswordInput.focus();
+      return;
+    }
+    state.adminAttempts = 0;
+    state.adminLockedUntil = 0;
+    dom.adminPasswordInput.value = '';
+    dom.adminLoginError.hidden = true;
+    dom.adminLoginDialog.close();
+    setAdminMode(true, { silent: true });
+    openSettings();
+    toast('管理员模式已开启。上锁后会自动关闭。', {
+      tone: 'success',
+      duration: 3600,
+    });
+  } finally {
+    dom.adminLoginSubmit.disabled = false;
+    dom.adminLoginSubmit.textContent = '开启管理员模式';
+  }
+}
+
+function showAdminLoginError(message) {
+  dom.adminLoginError.textContent = message;
+  dom.adminLoginError.hidden = false;
+}
+
+function setAdminMode(enabled, { silent = false } = {}) {
+  const next = Boolean(enabled);
+  if (state.adminMode === next) {
+    renderAdminModeState();
+    return;
+  }
+  state.adminMode = next;
+  if (next) dom.toastHost.replaceChildren();
+  if (!next && state.view === 'admin') {
+    setView('shelf');
+    renderShelf();
+    navigate('#/', { replace: true });
+    document.title = `${state.config?.site?.title || '潮汐手记'} · Tidal Diary`;
+  }
+  renderAdminModeState();
+  if (!silent) {
+    toast(next ? '管理员模式已开启。' : '管理员模式已关闭。', {
+      tone: next ? 'success' : 'info',
+      duration: 3000,
+    });
+  }
+}
+
+function renderAdminModeState() {
+  if (dom.adminModeName) {
+    dom.adminModeName.textContent = state.adminMode
+      ? '管理员模式 · 已开启'
+      : '管理员模式 · 已关闭';
+  }
+  if (dom.adminModeToggle) {
+    dom.adminModeToggle.textContent = state.adminMode ? '关闭' : '开启';
+    dom.adminModeToggle.classList.toggle('is-active', state.adminMode);
+  }
+  if (dom.changePasswordButton) {
+    dom.changePasswordButton.classList.toggle('is-admin-locked', !state.adminMode);
+  }
+  if (dom.adminPanelButton) {
+    dom.adminPanelButton.classList.toggle('is-admin-locked', !state.adminMode);
+  }
+  if (dom.importButton) {
+    dom.importButton.classList.toggle('is-admin-locked', !state.adminMode);
+  }
+}
+
+function openAdminView() {
+  if (!state.authenticated || !state.adminMode || !state.payload) {
+    if (!state.adminMode) requireAdminMode();
+    return;
+  }
+  if (dom.settingsDialog.open) dom.settingsDialog.close();
+  setView('admin');
+  renderAdmin();
+  window.scrollTo(0, 0);
+}
+
+function closeAdminPanel({ disable = false, goSettings = true } = {}) {
+  if (disable) state.adminMode = false;
+  if (state.view === 'admin') {
+    if (goSettings && state.authenticated) {
+      setView('shelf');
+      renderShelf();
+      openSettings();
+    } else {
+      setView('shelf');
+      renderShelf();
+      navigate('#/', { replace: true });
+      document.title = `${state.config?.site?.title || '潮汐手记'} · Tidal Diary`;
+    }
+  }
+  renderAdminModeState();
+}
+
+function renderAdmin() {
+  if (!state.payload) return;
+  const entries = sortEntries(state.payload.entries || []);
+  const stats = normalizeStats(state.payload.stats);
+  const totals = new Map();
+  const locals = new Map();
+  for (const [deviceId, records] of Object.entries(stats.devices)) {
+    for (const [entryId, record] of Object.entries(records)) {
+      totals.set(entryId, (totals.get(entryId) || 0) + record.views);
+      if (deviceId === state.deviceId) {
+        locals.set(entryId, (locals.get(entryId) || 0) + record.views);
+      }
+    }
+  }
+  const totalViews = entries.reduce((sum, entry) => sum + (totals.get(entry.id) || 0), 0);
+  const localViews = entries.reduce((sum, entry) => sum + (locals.get(entry.id) || 0), 0);
+  const totalWords = entries.reduce((sum, entry) => sum + countChars(entry.body || ''), 0);
+  dom.adminEntryCount.textContent = String(entries.length);
+  dom.adminTotalViews.textContent = String(totalViews);
+  dom.adminLocalViews.textContent = String(localViews);
+  dom.adminWordCount.textContent = String(totalWords);
+  dom.adminList.replaceChildren();
+
+  if (!entries.length) {
+    const empty = document.createElement('p');
+    empty.className = 'admin-empty';
+    empty.textContent = '还没有日记。';
+    dom.adminList.appendChild(empty);
+    return;
+  }
+
+  for (const entry of entries) {
+    const row = document.createElement('article');
+    row.className = 'admin-entry';
+
+    const main = document.createElement('div');
+    main.className = 'admin-entry-main';
+    const date = document.createElement('span');
+    date.className = 'admin-entry-date';
+    date.textContent = formatDateLongCN(entry.date);
+    const title = document.createElement('strong');
+    title.className = 'admin-entry-title';
+    title.textContent = entry.title?.trim() || '无题';
+    const meta = document.createElement('span');
+    meta.className = 'admin-entry-meta';
+    meta.textContent = formatTime(entry.createdAt);
+    main.append(date, title, meta);
+
+    const counts = document.createElement('div');
+    counts.className = 'admin-entry-counts';
+    const total = document.createElement('span');
+    total.append(document.createTextNode('总计 '));
+    const totalValue = document.createElement('strong');
+    totalValue.textContent = String(totals.get(entry.id) || 0);
+    total.appendChild(totalValue);
+    const local = document.createElement('span');
+    local.append(document.createTextNode('本机 '));
+    const localValue = document.createElement('strong');
+    localValue.textContent = String(locals.get(entry.id) || 0);
+    local.appendChild(localValue);
+    counts.append(total, local);
+
+    const actions = document.createElement('div');
+    actions.className = 'admin-entry-actions';
+    const edit = document.createElement('button');
+    edit.type = 'button';
+    edit.className = 'btn btn-ghost btn-tiny';
+    edit.dataset.adminEdit = entry.id;
+    edit.textContent = '编辑';
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.className = 'btn btn-danger btn-tiny';
+    remove.dataset.adminDelete = entry.id;
+    remove.textContent = '删除';
+    actions.append(edit, remove);
+
+    row.append(main, counts, actions);
+    dom.adminList.appendChild(row);
+  }
+}
+
+function discardDeletedImages(refs) {
+  for (const ref of refs || []) {
+    const stillUsed = (state.payload?.entries || []).some((entry) =>
+      (entry.images || []).some((image) => image.id === ref.id),
+    );
+    if (!stillUsed) {
+      const url = state.imagePreviews.get(ref.id);
+      if (url) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch {
+          /* 忽略 */
+        }
+      }
+      state.imagePreviews.delete(ref.id);
+      state.imagePreviewErrors.delete(ref.id);
+    }
+  }
+}
+
+async function handleAdminDelete(entryId) {
+  if (!state.adminMode || !state.payload) return;
+  const entry = findEntry(state.payload.entries || [], entryId);
+  if (!entry) return;
+  const title = entry.title?.trim() || '这一篇';
+  const ok = await confirmAction({
+    eyebrow: 'ADMIN DELETE',
+    title: '从日记里删除这一篇？',
+    message: `「${title}」会从云端和本机一起删除，阅读次数也会一起移除。这个动作无法撤销。`,
+    okLabel: '确认删除',
+    cancelLabel: '取消',
+    danger: true,
+  });
+  if (!ok) return;
+
+  const refs = Array.isArray(entry.images) ? entry.images : [];
+  state.payload = deleteEntry(state.payload, entryId);
+  await discardDeletedImages(refs);
+  reader.setEntries(sortEntries(state.payload.entries));
+  renderShelf();
+  renderAdmin();
+  if (state.repo) await state.repo.cachePayload(state.payload);
+  let synced = true;
+  if (!state.demoMode) {
+    const result = await syncNow({ message: 'diary: 删除一页', silent: true });
+    synced = result.ok;
+  } else {
+    state.demoSnapshot = state.payload;
+  }
+  toast(
+    synced ? '已经删除这一篇。' : '已从本机删除，云端会在下次同步时更新。',
+    { tone: synced ? 'success' : 'warn', duration: 4200 },
+  );
+}
+
+async function handleAdminStatsSync() {
+  if (!state.payload) return;
+  if (state.demoMode) {
+    toast('演示模式不会上传阅读统计。', { tone: 'info' });
+    return;
+  }
+  dom.adminStatsSync.disabled = true;
+  await flushStatsCacheNow();
+  const result = await syncNow({
+    message: 'diary: 同步阅读统计',
+    silent: true,
+    forceWrite: true,
+  });
+  dom.adminStatsSync.disabled = false;
+  if (result.ok) {
+    state.statsDirty = false;
+    renderAdmin();
+    toast('阅读统计已同步到云端。', { tone: 'success' });
+  } else {
+    toast(result.error?.message || '阅读统计暂时无法同步。', { tone: 'warn' });
+  }
+}
+
 async function closeEditorWithConfirm({ skipConfirm = false } = {}) {
   if (!state.editor) return true;
   if (state.editor.dirty && !skipConfirm) {
@@ -1379,6 +1956,14 @@ async function closeEditorWithConfirm({ skipConfirm = false } = {}) {
 
 async function handleEditorSave() {
   if (!state.editor || state.editor.saving) return;
+  if (state.editor.id && !state.adminMode) {
+    requireAdminMode();
+    return;
+  }
+  if (state.editor.imageBusy) {
+    toast('配图还在处理中，等一小会儿再收好这一页。', { tone: 'info' });
+    return;
+  }
   updateEditorFromDom({ markDirty: false });
   const editor = state.editor;
   const title = dom.editorTitle.value.trim();
@@ -1395,6 +1980,10 @@ async function handleEditorSave() {
   dom.editorSaveLabel.textContent = '正在收好…';
   dom.editorSaveState.textContent = '保存中…';
 
+  const usedImageKeys = extractImageKeys(body);
+  const images = (editor.images || [])
+    .filter((ref) => usedImageKeys.has(Number(ref.key)))
+    .map(serializeImageRef);
   const now = new Date().toISOString();
   const entry = {
     id: editor.id || uid(),
@@ -1403,6 +1992,7 @@ async function handleEditorSave() {
     body,
     mood: editor.mood || '',
     weather: editor.weather || '',
+    images,
     createdAt: editor.createdAt || now,
     updatedAt: now,
   };
@@ -1455,6 +2045,7 @@ async function handleEditorSave() {
 
 async function handleEditorDelete() {
   if (!state.editor?.id) return;
+  if (!requireAdminMode()) return;
   const title = state.editor.title?.trim() || '这一篇';
   const ok = await confirmAction({
     eyebrow: 'DELETE A PAGE',
@@ -1467,7 +2058,9 @@ async function handleEditorDelete() {
   if (!ok) return;
 
   const id = state.editor.id;
+  const deletedImages = Array.isArray(state.editor.images) ? state.editor.images : [];
   state.payload = deleteEntry(state.payload, id);
+  await discardDeletedImages(deletedImages);
   reader.setEntries(sortEntries(state.payload.entries));
   clearDraft();
   state.editor = null;
@@ -1491,7 +2084,12 @@ async function handleEditorDelete() {
 
 /* --------------------------------- 同步 ---------------------------------- */
 
-async function syncNow({ silent = false, message = 'diary: 同步日记', payload = null } = {}) {
+async function syncNow({
+  silent = false,
+  message = 'diary: 同步日记',
+  payload = null,
+  forceWrite = false,
+} = {}) {
   if (state.demoMode) {
     if (!silent) toast('演示模式不会上传内容。', { tone: 'info' });
     return { ok: true, demo: true };
@@ -1515,15 +2113,17 @@ async function syncNow({ silent = false, message = 'diary: 同步日记', payloa
   state.syncPromise = (async () => {
     try {
       const target = payload || state.payload;
-      const result = await state.repo.sync(target, { message });
+      const result = await state.repo.sync(target, { message, forceWrite });
       if (session === state.sessionId) {
         state.payload = result.payload;
+        if (!result.noop || forceWrite) state.statsDirty = false;
         state.pending = false;
         state.offline = false;
         state.tokenInvalid = false;
         state.lastError = '';
         reader.setEntries(sortEntries(state.payload.entries));
         if (state.view === 'shelf') renderShelf();
+        if (state.view === 'admin') renderAdmin();
         renderStatus();
       }
       if (!silent) {
@@ -1588,6 +2188,7 @@ function renderSettingsState() {
   dom.settingsFontMinus.disabled = state.fontSize <= 15;
   dom.settingsFontPlus.disabled = state.fontSize >= 24;
   dom.autoLockSelect.value = String(state.autoLockMinutes);
+  renderAdminModeState();
 }
 
 function applyTheme(theme, { silent = false } = {}) {
@@ -1693,7 +2294,18 @@ function exportMarkdown() {
       .filter(Boolean)
       .join(' ｜ ');
     if (meta) lines.push(`*${meta}*`, '');
-    lines.push(entry.body || '', '');
+    const imageCount = Array.isArray(entry.images) ? entry.images.length : 0;
+    const cleanBody = String(entry.body || '')
+      .replace(/【图\d+】/g, '')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    lines.push(cleanBody, '');
+    if (imageCount) {
+      lines.push(
+        `> 配图 ${imageCount} 张：加密保存在仓库的 data/images/ 目录，不包含在这份 Markdown 里。`,
+        '',
+      );
+    }
   }
   downloadText(
     `tidal-diary-${todayKey().replace(/-/g, '')}.md`,
@@ -1818,6 +2430,24 @@ function sanitizeImportedPayload(raw) {
     const updatedAt = Number.isFinite(Date.parse(item.updatedAt))
       ? new Date(item.updatedAt).toISOString()
       : createdAt;
+    const images = Array.isArray(item.images)
+      ? item.images
+          .slice(0, MAX_IMAGES_PER_ENTRY)
+          .map((ref, index) => {
+            if (!ref || typeof ref !== 'object' || typeof ref.id !== 'string') return null;
+            return {
+              id: ref.id.slice(0, 120),
+              key: Number(ref.key) || index + 1,
+              path: typeof ref.path === 'string' ? ref.path.slice(0, 500) : '',
+              width: Math.max(0, Math.min(10000, Number(ref.width) || 0)),
+              height: Math.max(0, Math.min(10000, Number(ref.height) || 0)),
+              mime: typeof ref.mime === 'string' ? ref.mime.slice(0, 80) : 'image/webp',
+              size: Math.max(0, Number(ref.size) || 0),
+              name: String(ref.name || '配图').slice(0, 160),
+            };
+          })
+          .filter(Boolean)
+      : [];
     entries.push({
       id,
       date,
@@ -1825,6 +2455,7 @@ function sanitizeImportedPayload(raw) {
       body: String(item.body || '').slice(0, 400000),
       mood: validMoods.has(item.mood) ? item.mood : '',
       weather: validWeathers.has(item.weather) ? item.weather : '',
+      images,
       createdAt,
       updatedAt,
     });
@@ -1842,6 +2473,8 @@ function sanitizeImportedPayload(raw) {
     version: 1,
     entries,
     tombstones,
+    settings: normalizeSettings(raw?.settings),
+    stats: normalizeStats(raw?.stats),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -1873,6 +2506,7 @@ async function mergeImportedPayload(imported, sourceLabel) {
 /* --------------------------------- 密码 ---------------------------------- */
 
 function openChangePassword() {
+  if (!requireAdminMode()) return;
   if (state.demoMode) {
     toast('演示模式不需要更改密码。', { tone: 'info' });
     return;
@@ -2035,14 +2669,24 @@ async function lockApp({ reason = 'manual' } = {}) {
   if (state.syncing && state.syncPromise) {
     await Promise.race([state.syncPromise, delay(2800)]);
   }
+  await flushStatsCacheNow();
 
   state.sessionId += 1;
+  state.adminMode = false;
+  state.adminAttempts = 0;
+  state.adminLockedUntil = 0;
+  window.clearTimeout(state.statsCacheTimer);
+  state.statsDirty = false;
   state.authenticated = false;
   state.lockWasAuto = reason === 'auto';
   const demoSnapshot = state.demoMode ? state.payload : null;
 
   document.querySelectorAll('dialog[open]').forEach((dialog) => dialog.close());
   reader?.dispose();
+  if (!state.demoMode) {
+    state.repo?.clearImageCache();
+    clearImagePreviews();
+  }
   state.masterRaw && zeroBytes(state.masterRaw);
   state.masterRaw = null;
   state.masterKey = null;
@@ -2075,6 +2719,10 @@ async function lockApp({ reason = 'manual' } = {}) {
   dom.shelf.hidden = false;
   dom.reader.hidden = true;
   dom.editor.hidden = true;
+  dom.adminView.hidden = true;
+  dom.adminList.replaceChildren();
+  dom.adminPasswordInput.value = '';
+  dom.adminLoginError.hidden = true;
   dom.timeline.replaceChildren();
   dom.catalogList.replaceChildren();
   dom.pageTrack.replaceChildren();
@@ -2082,6 +2730,7 @@ async function lockApp({ reason = 'manual' } = {}) {
   dom.readerKicker.textContent = '';
   dom.editorTitle.value = '';
   dom.editorBody.value = '';
+  dom.imageViewerImg.removeAttribute('src');
   dom.passwordInput.value = '';
   dom.passwordInput.disabled = false;
   setUnlockBusy(false);
@@ -2164,6 +2813,7 @@ function bindEvents() {
     const entry = reader?.entry;
     closeReaderPopovers();
     if (!entry) return;
+    if (!requireAdminMode()) return;
     reader.saveProgress();
     state.currentReaderId = entry.id;
     openEditor(entry.id, { history: 'push', returnTo: 'reader' });
@@ -2184,13 +2834,63 @@ function bindEvents() {
   dom.editorSave.addEventListener('click', handleEditorSave);
   dom.editorDelete.addEventListener('click', handleEditorDelete);
   dom.editorTitle.addEventListener('input', () => updateEditorFromDom());
-  dom.editorBody.addEventListener('input', () => updateEditorFromDom());
+  dom.editorBody.addEventListener('focus', () => {
+    if (state.editor) state.editor.bodyTouched = true;
+  });
+  dom.editorBody.addEventListener('input', () => {
+    if (state.editor) state.editor.bodyTouched = true;
+    updateEditorFromDom();
+  });
   dom.editorDate.addEventListener('change', () => {
     updateEditorFromDom();
     updateEditorNumber();
   });
   dom.moodPicker.addEventListener('click', (event) => toggleEditorChip(event, 'mood'));
   dom.weatherPicker.addEventListener('click', (event) => toggleEditorChip(event, 'weather'));
+
+  dom.imageViewerClose.addEventListener('click', closeImageViewer);
+  dom.imageViewer.addEventListener('click', (event) => {
+    if (event.target === dom.imageViewer) closeImageViewer();
+  });
+  dom.imageViewer.addEventListener('close', () => {
+    dom.imageViewerImg.removeAttribute('src');
+    dom.imageViewerCaption.textContent = '';
+  });
+
+  dom.adminModeToggle.addEventListener('click', () => {
+    if (state.adminMode) setAdminMode(false);
+    else openAdminLogin();
+  });
+  dom.adminPanelButton.addEventListener('click', () => {
+    if (!requireAdminMode()) return;
+    openAdminView();
+  });
+  dom.adminLoginForm.addEventListener('submit', handleAdminLogin);
+  dom.adminLoginDialog.addEventListener('click', (event) => {
+    if (event.target === dom.adminLoginDialog) dom.adminLoginDialog.close();
+  });
+  dom.adminLoginDialog.querySelectorAll('[data-close-dialog]').forEach((button) => {
+    button.addEventListener('click', () => dom.adminLoginDialog.close());
+  });
+  dom.adminBack.addEventListener('click', () => closeAdminPanel({ goSettings: true }));
+  dom.adminExit.addEventListener('click', () =>
+    closeAdminPanel({ disable: true, goSettings: false }),
+  );
+  dom.adminStatsSync.addEventListener('click', handleAdminStatsSync);
+  dom.adminList.addEventListener('click', (event) => {
+    const edit = event.target.closest('[data-admin-edit]');
+    if (edit) {
+      event.preventDefault();
+      if (!requireAdminMode()) return;
+      openEditor(edit.dataset.adminEdit, { history: 'push', returnTo: 'shelf' });
+      return;
+    }
+    const button = event.target.closest('[data-admin-delete]');
+    if (!button) return;
+    event.preventDefault();
+    if (!requireAdminMode()) return;
+    handleAdminDelete(button.dataset.adminDelete);
+  });
 
   dom.settingsDialog.addEventListener('click', (event) => {
     if (event.target === dom.settingsDialog) dom.settingsDialog.close();
@@ -2244,13 +2944,18 @@ function bindEvents() {
       duration: 2200,
     });
   });
-  dom.syncNowButton.addEventListener('click', () => syncNow({ message: 'diary: 手动同步' }));
+  dom.syncNowButton.addEventListener('click', () =>
+    syncNow({ message: 'diary: 手动同步', forceWrite: state.statsDirty }),
+  );
   dom.updateTokenButton.addEventListener('click', openTokenDialog);
   dom.tokenForm.addEventListener('submit', handleTokenUpdate);
   dom.changePasswordButton.addEventListener('click', openChangePassword);
   dom.exportEncryptedButton.addEventListener('click', exportEncryptedBackup);
   dom.exportMarkdownButton.addEventListener('click', exportMarkdown);
-  dom.importButton.addEventListener('click', () => dom.importFileInput.click());
+  dom.importButton.addEventListener('click', () => {
+    if (!requireAdminMode()) return;
+    dom.importFileInput.click();
+  });
   dom.importFileInput.addEventListener('change', () => {
     handleImportFile(dom.importFileInput.files?.[0]);
   });
@@ -2315,6 +3020,7 @@ function handleTimelineClick(event) {
   if (edit) {
     event.preventDefault();
     event.stopPropagation();
+    if (!requireAdminMode()) return;
     openEditor(edit.dataset.editEntry);
     return;
   }
@@ -2354,6 +3060,10 @@ function toggleEditorChip(event, type) {
 }
 
 async function handleEditorBack() {
+  if (state.editor?.imageBusy) {
+    toast('配图还在处理中，等一小会儿再离开。', { tone: 'info' });
+    return;
+  }
   const returnTo = state.editorReturn;
   const readerId = state.currentReaderId;
   const ok = await closeEditorWithConfirm();
@@ -2394,6 +3104,13 @@ function handleDocumentPointerDown(event) {
 
 function handleGlobalKeydown(event) {
   resetActivity();
+  if (dom.imageViewer.open) {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeImageViewer();
+    }
+    return;
+  }
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') {
     if (state.view === 'editor') {
       event.preventDefault();
@@ -2626,7 +3343,7 @@ function registerServiceWorker() {
   if (!/^https?:$/.test(location.protocol)) return;
   window.addEventListener('load', () => {
     navigator.serviceWorker
-      .register(new URL('./sw.js', document.baseURI), { scope: './' })
+      .register(new URL(`./sw.js?v=${APP_VERSION}`, document.baseURI), { scope: './' })
       .catch(() => {
         /* 离线缓存失败不影响主功能 */
       });

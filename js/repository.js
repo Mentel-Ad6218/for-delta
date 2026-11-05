@@ -2,13 +2,14 @@
 
 import {
   createEmptyPayload,
+  decryptImageBytes,
   decryptPayload,
   encryptPayload,
   isDataEnvelope,
   normalizePayload,
-} from './crypto.js';
-import { GitHubClient, GitHubError, repoFromLocation } from './github.js';
-import { hasMeaningfulDifference, mergePayloads } from './model.js';
+} from './crypto.js?v=1.4.0';
+import { GitHubClient, GitHubError, repoFromLocation } from './github.js?v=1.4.0';
+import { hasMeaningfulDifference, mergePayloads } from './model.js?v=1.4.0';
 
 export const CONFIG_CACHE_KEY = 'tidal.config.v1';
 export const DATA_CACHE_KEY = 'tidal.data.v1';
@@ -172,6 +173,73 @@ export class DiaryRepository {
     this.branch = config.repo.branch;
     this.dataPath = config.repo.dataPath;
     this.configPath = config.repo.configPath;
+    this.imageCache = new Map();
+  }
+
+  imagePath(id) {
+    const parts = this.dataPath.split('/');
+    parts.pop();
+    return [...parts, 'images', `${id}.bin`].join('/');
+  }
+
+  async readImageCiphertext(ref) {
+    const path = ref.path || this.imagePath(ref.id);
+    let apiError = null;
+    let file = null;
+    try {
+      file = await this.client.getBinaryFile(this.owner, this.repo, path, this.branch);
+    } catch (error) {
+      apiError = error;
+    }
+    if (!file) {
+      const raw = await this.client.readPublicBinaryFile(
+        this.owner,
+        this.repo,
+        path,
+        this.branch,
+      );
+      if (raw) file = raw;
+    }
+    if (!file) {
+      throw new SyncError(
+        apiError instanceof GitHubError ? apiError.message : '配图文件不存在或暂时无法读取',
+        { offline: Boolean(apiError), cause: apiError },
+      );
+    }
+    return file.bytes;
+  }
+
+  /** 读取并解密一张配图，返回可供 <img> 使用的 object URL。 */
+  async loadImage(ref) {
+    if (!ref?.id) throw new SyncError('配图缺少 ID');
+    const cached = this.imageCache.get(ref.id);
+    if (cached) return cached;
+
+    const packed = await this.readImageCiphertext(ref);
+    const bytes = await decryptImageBytes(this.masterKey, packed, ref.id);
+    const mime = ref.mime || 'image/webp';
+    const url = URL.createObjectURL(new Blob([bytes], { type: mime }));
+    const loaded = {
+      id: ref.id,
+      url,
+      width: ref.width || 0,
+      height: ref.height || 0,
+      mime,
+      name: ref.name || '',
+    };
+    this.imageCache.set(ref.id, loaded);
+    return loaded;
+  }
+
+  clearImageCache() {
+    for (const item of this.imageCache.values()) {
+      try {
+        URL.revokeObjectURL(item.url);
+      } catch {
+        /* 忽略 */
+      }
+    }
+    this.imageCache.clear();
   }
 
   get remoteName() {
@@ -295,7 +363,7 @@ export class DiaryRepository {
   /**
    * 与云端合并并上传。网络失败时会先写本地缓存，再抛出 SyncError。
    */
-  async sync(localPayload, { message = 'diary: 写下新的一页' } = {}) {
+  async sync(localPayload, { message = 'diary: 写下新的一页', forceWrite = false } = {}) {
     let lastError = null;
     let merged = normalizePayload(localPayload);
 
@@ -339,7 +407,7 @@ export class DiaryRepository {
       }
 
       merged = mergePayloads(remotePayload, localPayload);
-      const needsWrite = !file || hasMeaningfulDifference(remotePayload, merged);
+      const needsWrite = forceWrite || !file || hasMeaningfulDifference(remotePayload, merged);
 
       if (!needsWrite) {
         await this.cachePayload(merged);

@@ -31,12 +31,26 @@ function utf8ToBase64(text) {
   return btoa(binary);
 }
 
-function base64ToUtf8(value) {
+function base64ToBytes(value) {
   const normalized = String(value || '').replace(/\s+/g, '');
   const binary = atob(normalized);
   const bytes = new Uint8Array(binary.length);
   for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i);
-  return new TextDecoder().decode(bytes);
+  return bytes;
+}
+
+function base64ToUtf8(value) {
+  return new TextDecoder().decode(base64ToBytes(value));
+}
+
+function bytesToBase64(bytes) {
+  const view = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes);
+  let binary = '';
+  const chunk = 0x8000;
+  for (let i = 0; i < view.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, view.subarray(i, i + chunk));
+  }
+  return btoa(binary);
 }
 
 function friendlyMessage(status, detail = '') {
@@ -139,17 +153,86 @@ export class GitHubClient {
   }
 
   async putFile(owner, repo, path, branch, content, { message, sha } = {}) {
+    return this.putBase64(
+      owner,
+      repo,
+      path,
+      branch,
+      utf8ToBase64(content),
+      { message, sha },
+    );
+  }
+
+  async putBinaryFile(owner, repo, path, branch, bytes, { message, sha } = {}) {
+    return this.putBase64(owner, repo, path, branch, bytesToBase64(bytes), {
+      message,
+      sha,
+    });
+  }
+
+  async putBase64(owner, repo, path, branch, base64Content, { message, sha } = {}) {
     const body = {
       message: message || 'chore: update tidal diary',
-      content: utf8ToBase64(content),
+      content: base64Content,
       branch,
     };
     if (sha) body.sha = sha;
-    const data = await this.request(
+    return this.request(
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodePath(path)}`,
       { method: 'PUT', body },
     );
-    return data;
+  }
+
+  /**
+   * 读取二进制文件；文件不存在时返回 null。
+   * 返回 { bytes, sha, size, htmlUrl }
+   */
+  async getBinaryFile(owner, repo, path, branch) {
+    const url = `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodePath(
+      path,
+    )}?ref=${encodeURIComponent(branch)}`;
+    try {
+      const data = await this.request(url);
+      if (Array.isArray(data)) {
+        throw new GitHubError('配图路径指向了一个文件夹', { code: 'IS_DIRECTORY' });
+      }
+      if (typeof data.content !== 'string' || data.content.length === 0) {
+        throw new GitHubError('配图文件过大或为空，无法通过 Contents API 读取', {
+          code: 'EMPTY_CONTENT',
+        });
+      }
+      return {
+        bytes: base64ToBytes(data.content),
+        sha: data.sha,
+        size: data.size,
+        htmlUrl: data.html_url,
+      };
+    } catch (error) {
+      if (error instanceof GitHubError && error.status === 404) return null;
+      throw error;
+    }
+  }
+
+  /** 公开仓库的 raw 二进制回退 */
+  async readPublicBinaryFile(owner, repo, path, branch) {
+    const url = `https://raw.githubusercontent.com/${encodeURIComponent(
+      owner,
+    )}/${encodeURIComponent(repo)}/${encodeURIComponent(branch)}/${encodePath(path)}?t=${Date.now()}`;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      const response = await fetch(url, {
+        signal: controller.signal,
+        cache: 'no-store',
+        credentials: 'omit',
+      });
+      if (!response.ok) return null;
+      return { bytes: new Uint8Array(await response.arrayBuffer()), sha: null };
+    } catch {
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** 公开仓库的 raw 回退读取：API 限流或 Token 过期时仍可只读 */

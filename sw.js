@@ -3,7 +3,7 @@
  * config.json 永远不缓存，避免密码更换后读到旧配置。
  */
 
-const VERSION = 'tidal-v1.3.0';
+const VERSION = 'tidal-v1.4.0';
 const SCOPE = self.registration.scope;
 
 const CORE_FILES = [
@@ -20,7 +20,7 @@ const CORE_FILES = [
   'js/repository.js',
   'js/reader.js',
   'js/images.js',
-  'js/image-store.js',
+  'js/boot-guard.js',
   'js/demo.js',
   'assets/favicon.svg',
   'assets/icon-192.png',
@@ -84,7 +84,8 @@ self.addEventListener('fetch', (event) => {
 async function networkFirst(request) {
   const cache = await caches.open(CACHE);
   try {
-    const response = await fetch(request);
+    // 绕过 GitHub Pages / 浏览器的旧 HTTP 缓存，确保 JS/CSS 更新后能立刻拿到。
+    const response = await fetch(request, { cache: 'reload' });
     if (response.ok) cache.put(request, response.clone());
     return response;
   } catch {

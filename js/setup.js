@@ -13,8 +13,8 @@ import {
   passwordScore,
   sealSecrets,
   zeroBytes,
-} from './crypto.js';
-import { GitHubClient, GitHubError, repoFromLocation } from './github.js';
+} from './crypto.js?v=1.4.0';
+import { GitHubClient, GitHubError, repoFromLocation } from './github.js?v=1.4.0';
 
 const $ = (id) => document.getElementById(id);
 
