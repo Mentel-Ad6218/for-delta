@@ -20,11 +20,15 @@ import {
   entryViews,
   hasMeaningfulDifference,
   mergePayloads,
+  mergeReactions,
   mergeStats,
+  reactionFor,
   recordStatsView,
+  setReaction,
   upsertEntry,
 } from '../js/model.js';
 import { demoEntries } from '../js/demo.js';
+import { drawingHasInk, emptyDrawing, normalizeDrawing as normalizeSketch } from '../js/drawing.js';
 
 class MemoryStorage {
   constructor() {
@@ -224,6 +228,41 @@ const settingsPayload = mergePayloads(
 assert.equal(settingsPayload.settings.imageStorage.provider, 'cloudinary');
 assert.equal(entryViews(settingsPayload.stats, 'entry-1'), 3);
 assert.equal(entryViews(deleteEntry(settingsPayload, 'entry-1').stats, 'entry-1'), 0);
+
+// 读后 reaction：可收回、按时间合并、删除日记时清理
+const reactionTime = '2026-11-01T10:00:00.000Z';
+const reactions = setReaction({}, 'entry-1', '😊', reactionTime);
+assert.equal(reactionFor(reactions, 'entry-1').emoji, '😊');
+const retracted = setReaction(reactions, 'entry-1', '', '2026-11-01T10:01:00.000Z');
+assert.equal(retracted['entry-1'].emoji, '');
+assert.equal(
+  mergeReactions({ 'entry-1': { emoji: '😊', updatedAt: '2026-11-01T09:00:00.000Z' } }, retracted)['entry-1'].emoji,
+  '',
+);
+assert.equal(
+  mergeReactions(retracted, { 'entry-1': { emoji: '😊', updatedAt: '2026-11-01T08:00:00.000Z' } })['entry-1'].emoji,
+  '',
+);
+assert.equal(hasMeaningfulDifference(payload, { ...payload, reactions }), true);
+const reactedPayload = mergePayloads(payload, { ...payload, reactions, updatedAt: reactionTime });
+assert.equal(reactedPayload.reactions['entry-1'].emoji, '😊');
+assert.equal(deleteEntry(reactedPayload, 'entry-1').reactions['entry-1'], undefined);
+
+// 涂鸦：清理异常点、限制坐标、空画不留墨
+const sketch = normalizeSketch({
+  version: 1,
+  strokes: [
+    { color: 'blue', width: 999, erase: false, points: [[-10, 700], [500, 300], ['x', 2]] },
+    { color: 'bogus', width: 3, points: [{ x: 12, y: 13 }] },
+  ],
+});
+assert.equal(sketch.width, 1000);
+assert.equal(sketch.height, 600);
+assert.equal(sketch.strokes.length, 2);
+assert.deepEqual(sketch.strokes[0].points[0], [0, 600]);
+assert.equal(sketch.strokes[1].color, 'ink');
+assert.equal(drawingHasInk(sketch), true);
+assert.equal(drawingHasInk(emptyDrawing()), false);
 
 // 兼容旧版仓库内配图（新增配图功能已停用，只保留只读显示）
 fake.imageFiles.set('data/images/image-legacy.bin', packedImage);

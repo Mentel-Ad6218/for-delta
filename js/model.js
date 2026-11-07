@@ -318,6 +318,99 @@ export function updateImageStorageSettings(payload, patch) {
   });
 }
 
+/* -------------------------------- 读后反应 -------------------------------- */
+
+export const REACTIONS = Object.freeze([
+  { emoji: '😊', label: '开心' },
+  { emoji: '😄', label: '大笑' },
+  { emoji: '😆', label: '兴奋' },
+  { emoji: '😂', label: '笑哭' },
+  { emoji: '🙂', label: '平静' },
+  { emoji: '😌', label: '安心' },
+  { emoji: '😍', label: '喜欢' },
+  { emoji: '🥰', label: '温暖' },
+  { emoji: '😘', label: '亲亲' },
+  { emoji: '😎', label: '得意' },
+  { emoji: '🤔', label: '思考' },
+  { emoji: '😮', label: '惊讶' },
+  { emoji: '😲', label: '震惊' },
+  { emoji: '😢', label: '难过' },
+  { emoji: '😭', label: '大哭' },
+  { emoji: '😔', label: '失落' },
+  { emoji: '😞', label: '沮丧' },
+  { emoji: '😤', label: '生气' },
+  { emoji: '😡', label: '愤怒' },
+  { emoji: '😴', label: '困倦' },
+  { emoji: '🤯', label: '崩溃' },
+  { emoji: '🥺', label: '委屈' },
+  { emoji: '😅', label: '尴尬' },
+  { emoji: '🙃', label: '无奈' },
+  { emoji: '🤍', label: '想念' },
+  { emoji: '❤️', label: '心动' },
+  { emoji: '💙', label: '忧郁' },
+  { emoji: '🌊', label: '潮汐' },
+  { emoji: '✨', label: '闪闪发光' },
+  { emoji: '🌧️', label: '下雨了' },
+  { emoji: '☀️', label: '晴朗' },
+  { emoji: '🫂', label: '想抱抱' },
+]);
+
+const REACTION_EMOJIS = new Set(REACTIONS.map((reaction) => reaction.emoji));
+
+export function normalizeReactions(raw) {
+  const reactions = {};
+  if (!raw || typeof raw !== 'object') return reactions;
+  let count = 0;
+  for (const [entryId, record] of Object.entries(raw).slice(0, 20000)) {
+    if (count >= 20000) break;
+    const cleanEntry = cleanText(entryId, 120);
+    if (!cleanEntry || !record || typeof record !== 'object') continue;
+    const emoji = typeof record.emoji === 'string' ? record.emoji : '';
+    // 空 emoji 是“已收回”的墓碑，必须保留，否则云端旧反应会复活。
+    if (emoji && !REACTION_EMOJIS.has(emoji)) continue;
+    const updatedAt = toIso(record.updatedAt);
+    if (!updatedAt) continue;
+    reactions[cleanEntry] = { emoji, updatedAt };
+    count += 1;
+  }
+  return reactions;
+}
+
+export function reactionFor(reactions, entryId) {
+  return normalizeReactions(reactions)[entryId] || null;
+}
+
+export function setReaction(reactions, entryId, emoji, at = new Date().toISOString()) {
+  const base = normalizeReactions(reactions);
+  const cleanEntry = cleanText(entryId, 120);
+  if (!cleanEntry) return base;
+  const cleanEmoji = emoji && REACTION_EMOJIS.has(emoji) ? emoji : '';
+  base[cleanEntry] = {
+    emoji: cleanEmoji,
+    updatedAt: toIso(at) || new Date().toISOString(),
+  };
+  return base;
+}
+
+export function mergeReactions(...sources) {
+  const merged = {};
+  for (const source of sources) {
+    for (const [entryId, record] of Object.entries(normalizeReactions(source))) {
+      const previous = merged[entryId];
+      if (!previous || toMs(record.updatedAt) >= toMs(previous.updatedAt)) {
+        merged[entryId] = { ...record };
+      }
+    }
+  }
+  return merged;
+}
+
+export function removeReactionsForEntry(reactions, entryId) {
+  const base = normalizeReactions(reactions);
+  delete base[entryId];
+  return base;
+}
+
 /* --------------------------------- 合并逻辑 --------------------------------- */
 
 function toMs(value) {
@@ -361,10 +454,12 @@ export function mergePayloads(base, incoming) {
 
   const mergedEntries = sortEntries([...entries.values()]);
   const stats = mergeStats(...sources.map((source) => source.stats));
+  const reactions = mergeReactions(...sources.map((source) => source.reactions));
   const latest = Math.max(
     ...sources.map((source) => toMs(source.updatedAt)),
     ...mergedEntries.map((entry) => toMs(entry.updatedAt)),
     ...Object.values(tombstones),
+    ...Object.values(reactions).map((record) => toMs(record.updatedAt)),
     toMs(settings.updatedAt),
     0,
   );
@@ -375,6 +470,7 @@ export function mergePayloads(base, incoming) {
     tombstones,
     settings,
     stats,
+    reactions,
     updatedAt: latest ? new Date(latest).toISOString() : new Date().toISOString(),
   };
 }
@@ -397,11 +493,16 @@ function contentSignature(payload) {
         date: entry.date,
         mood: entry.mood,
         weather: entry.weather,
+        drawing: entry.drawing || null,
         updatedAt: entry.updatedAt,
       }))
       .sort((x, y) => x.id.localeCompare(y.id)),
     tombstones: Object.fromEntries(
       Object.entries(payload.tombstones || {}).sort(([a], [b]) => a.localeCompare(b)),
+    ),
+    reactions: Object.fromEntries(
+      Object.entries(normalizeReactions(payload.reactions))
+        .sort(([a], [b]) => a.localeCompare(b)),
     ),
     // 阅读统计不触发同步，避免每读一次就产生一个提交。
     imageStorage: normalizeSettings(payload.settings).imageStorage,
@@ -419,6 +520,7 @@ export function upsertEntry(payload, entry) {
     tombstones,
     settings: normalizeSettings(payload.settings),
     stats: normalizeStats(payload.stats),
+    reactions: normalizeReactions(payload.reactions),
     updatedAt: new Date().toISOString(),
   });
 }
@@ -432,6 +534,7 @@ export function deleteEntry(payload, id) {
     tombstones,
     settings: normalizeSettings(payload.settings),
     stats: removeStatsForEntry(payload.stats, id),
+    reactions: removeReactionsForEntry(payload.reactions, id),
     updatedAt: new Date().toISOString(),
   });
 }
@@ -443,6 +546,7 @@ function normalizePayloadLocal(payload) {
     tombstones: payload.tombstones || {},
     settings: normalizeSettings(payload.settings),
     stats: normalizeStats(payload.stats),
+    reactions: normalizeReactions(payload.reactions),
     updatedAt: payload.updatedAt || new Date().toISOString(),
   };
 }

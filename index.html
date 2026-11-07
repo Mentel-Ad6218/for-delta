@@ -26,7 +26,7 @@
     <link rel="icon" href="./assets/favicon.svg" type="image/svg+xml" />
     <link rel="apple-touch-icon" href="./assets/icon-192.png" />
     <link rel="manifest" href="./manifest.webmanifest" />
-    <link rel="stylesheet" href="./css/style.css?v=1.4.0" />
+    <link rel="stylesheet" href="./css/style.css?v=1.5.0" />
   </head>
   <body>
     <a class="skip-link" href="#shelfMain">跳到日记</a>
@@ -510,6 +510,8 @@
               <button data-theme-choice="day" type="button" aria-label="晨光" title="晨光"></button>
               <button data-theme-choice="sepia" type="button" aria-label="暖纸" title="暖纸"></button>
               <button data-theme-choice="night" type="button" aria-label="夜航" title="夜航"></button>
+              <button data-theme-choice="mint" type="button" aria-label="薄绿" title="薄绿"></button>
+              <button data-theme-choice="violet" type="button" aria-label="黄紫" title="黄紫"></button>
             </div>
           </div>
         </div>
@@ -588,6 +590,27 @@
               placeholder="今天发生了什么？&#10;&#10;可以试试：# 小标题、&gt; 引用、--- 分隔线"
               spellcheck="false"
             ></textarea>
+
+            <section class="editor-drawing" aria-labelledby="drawingTitle">
+              <div class="editor-drawing-head">
+                <div>
+                  <p class="eyebrow">SKETCH</p>
+                  <h3 id="drawingTitle">这一页的涂鸦</h3>
+                </div>
+                <span id="drawingStatus" class="drawing-status">留白也可以 · 手指或鼠标都能画</span>
+              </div>
+              <div class="drawing-toolbar">
+                <div id="drawingColors" class="drawing-colors" role="group" aria-label="画笔颜色"></div>
+                <div class="drawing-actions">
+                  <button id="drawingEraser" class="drawing-tool" type="button" aria-pressed="false">橡皮</button>
+                  <button id="drawingUndo" class="drawing-tool" type="button">撤销</button>
+                  <button id="drawingClear" class="drawing-tool" type="button">清空</button>
+                </div>
+              </div>
+              <canvas id="drawingCanvas" width="1000" height="600" aria-label="涂鸦画板">
+                这一页可以留下一幅简单的涂鸦。
+              </canvas>
+            </section>
 
             <div class="editor-paper-foot">
               <span id="editorCount">0 字</span>
@@ -727,6 +750,14 @@
             <button class="theme-card" data-theme-choice="night" type="button">
               <span class="theme-preview preview-night"></span>
               <span>夜航</span>
+            </button>
+            <button class="theme-card" data-theme-choice="mint" type="button">
+              <span class="theme-preview preview-mint"></span>
+              <span>薄绿</span>
+            </button>
+            <button class="theme-card" data-theme-choice="violet" type="button">
+              <span class="theme-preview preview-violet"></span>
+              <span>黄紫</span>
             </button>
           </div>
           <div class="setting-line">
@@ -987,7 +1018,7 @@
       <div class="noscript">潮汐手记需要 JavaScript 才能解密和阅读。请启用 JavaScript 后再打开。</div>
     </noscript>
 
-    <script src="./js/boot-guard.js?v=1.4.0"></script>
-    <script type="module" src="./js/app.js?v=1.4.0"></script>
+    <script src="./js/boot-guard.js?v=1.5.0"></script>
+    <script type="module" src="./js/app.js?v=1.5.0"></script>
   </body>
 </html>

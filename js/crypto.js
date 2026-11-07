@@ -8,7 +8,7 @@
  *  - 所有密钥材料只在浏览器内存里出现，不发送给任何第三方。
  */
 
-import { normalizeSettings, normalizeStats } from './model.js?v=1.4.0';
+import { normalizeReactions, normalizeSettings, normalizeStats } from './model.js?v=1.5.0';
 
 export const DEFAULT_ITERATIONS = 310_000;
 export const MIN_ITERATIONS = 120_000;
@@ -249,6 +249,7 @@ export function createEmptyPayload() {
     tombstones: {},
     settings: normalizeSettings(null),
     stats: normalizeStats(null),
+    reactions: normalizeReactions(null),
     updatedAt: new Date().toISOString(),
   };
 }
@@ -268,6 +269,7 @@ export function normalizePayload(value) {
     tombstones,
     settings: normalizeSettings(payload.settings),
     stats: normalizeStats(payload.stats),
+    reactions: normalizeReactions(payload.reactions),
     updatedAt: typeof payload.updatedAt === 'string' ? payload.updatedAt : new Date().toISOString(),
   };
 }

@@ -12,10 +12,12 @@ import {
   moodOf,
   parseDateKey,
   readingMinutes,
+  REACTIONS,
   weekdayOf,
   weatherOf,
-} from './model.js?v=1.4.0';
-import { IMAGE_TOKEN_PATTERN } from './images.js?v=1.4.0';
+} from './model.js?v=1.5.0';
+import { IMAGE_TOKEN_PATTERN } from './images.js?v=1.5.0';
+import { drawingHasInk, normalizeDrawing, paintDrawing } from './drawing.js?v=1.5.0';
 
 const PROGRESS_KEY = 'tidal.progress.v1';
 const SPLIT_TAGS = new Set(['P']);
@@ -65,6 +67,7 @@ export class Reader {
     this.entry = null;
     this.entryIndex = 0;
     this.images = new Map();
+    this.reactions = {};
     this.pages = [];
     this.current = 0;
     this.step = 0;
@@ -88,6 +91,14 @@ export class Reader {
 
   setImages(images) {
     this.images = images instanceof Map ? images : new Map();
+  }
+
+  setReactions(reactions) {
+    this.reactions = reactions && typeof reactions === 'object' ? reactions : {};
+    if (!this.track) return;
+    for (const section of this.track.querySelectorAll('.chapter-reaction')) {
+      this.refreshReactionBlock(section, section.dataset.entryId);
+    }
   }
 
   get isOpen() {
@@ -139,6 +150,7 @@ export class Reader {
     this.entry = null;
     this.pages = [];
     this.images = new Map();
+    this.reactions = {};
     this.track.replaceChildren();
     this.closeChrome();
   }
@@ -512,6 +524,7 @@ export class Reader {
     if (entry.body) metaBits.push(`约 ${readingMinutes(entry.body)} 分钟`);
     const imageCount = (String(entry.body || '').match(/【图\d+】/g) || []).length;
     if (imageCount) metaBits.push(`${imageCount} 张配图`);
+    if (drawingHasInk(entry.drawing)) metaBits.push('1 幅涂鸦');
     meta.textContent = metaBits.join(' · ');
     const ornament = el('div', 'chapter-ornament');
     ornament.append(el('span'), el('i', '', 'Δ'), el('span'));
@@ -570,13 +583,16 @@ export class Reader {
       hasParagraph = true;
     }
 
-    if (!entry.body?.trim()) {
+    const drawing = normalizeDrawing(entry.drawing);
+    if (!entry.body?.trim() && !drawingHasInk(drawing)) {
       blocks.push(el('p', 'body-empty', '今天只留下了一点空白。'));
     }
+    if (drawingHasInk(drawing)) blocks.push(this.buildDrawingBlock(drawing));
 
     const end = el('div', 'chapter-end');
     end.append(el('span', 'end-line'), el('em', '', '完'), el('span', 'end-line'));
     blocks.push(end);
+    blocks.push(this.buildReactionBlock(entry));
 
     const nextEntry = this.entries[this.entryIndex + 1];
     if (nextEntry) {
@@ -637,6 +653,84 @@ export class Reader {
     const hint = el('span', 'body-image-hint', '轻点查看');
     figure.appendChild(hint);
     return figure;
+  }
+
+  buildDrawingBlock(drawing) {
+    const figure = el('figure', 'body-drawing');
+    const canvas = document.createElement('canvas');
+    canvas.className = 'body-drawing-canvas';
+    canvas.setAttribute('role', 'img');
+    canvas.setAttribute('aria-label', '这一页的涂鸦');
+    paintDrawing(canvas, drawing);
+    figure.append(canvas, el('figcaption', 'body-drawing-caption', '这一页的涂鸦'));
+    return figure;
+  }
+
+  buildReactionBlock(entry) {
+    const section = el('section', 'chapter-reaction');
+    section.dataset.entryId = entry.id;
+    section.setAttribute('aria-label', '读完这一篇的心情');
+
+    const head = el('div', 'reaction-head');
+    head.append(
+      el('p', 'reaction-eyebrow', 'AFTER READING'),
+      el('p', 'reaction-title', '这一页，留一个表情'),
+      el('p', 'reaction-hint', '选一个最接近此刻心情的 emoji，再点一次可以收回。'),
+    );
+
+    const current = el('div', 'reaction-current');
+    const currentEmoji = el('span', 'reaction-current-emoji');
+    const currentLabel = el('span', 'reaction-current-label');
+    const clear = el('button', 'reaction-clear', '收回');
+    clear.type = 'button';
+    clear.dataset.clearReaction = '1';
+    current.append(currentEmoji, currentLabel, clear);
+
+    const grid = el('div', 'reaction-grid');
+    grid.setAttribute('role', 'group');
+    grid.setAttribute('aria-label', '选择心情');
+    for (const reaction of REACTIONS) {
+      const button = el('button', 'reaction-option', reaction.emoji);
+      button.type = 'button';
+      button.dataset.reactEmoji = reaction.emoji;
+      button.title = reaction.label;
+      button.setAttribute('aria-label', `${reaction.label} ${reaction.emoji}`);
+      button.setAttribute('aria-pressed', 'false');
+      grid.appendChild(button);
+    }
+
+    section.append(head, current, grid);
+    this.refreshReactionBlock(section, entry.id);
+    return section;
+  }
+
+  refreshReactionBlock(section, entryId) {
+    const current = this.reactions[entryId]?.emoji || '';
+    const selected = REACTIONS.find((reaction) => reaction.emoji === current);
+    for (const button of section.querySelectorAll('[data-react-emoji]')) {
+      const active = button.dataset.reactEmoji === current;
+      button.classList.toggle('is-active', active);
+      button.setAttribute('aria-pressed', active ? 'true' : 'false');
+    }
+    const emojiNode = section.querySelector('.reaction-current-emoji');
+    const labelNode = section.querySelector('.reaction-current-label');
+    const clear = section.querySelector('[data-clear-reaction]');
+    if (emojiNode) emojiNode.textContent = current || '◌';
+    if (labelNode) labelNode.textContent = selected ? selected.label : '还没有留下表情';
+    if (clear) clear.hidden = !current;
+    section.classList.toggle('has-reaction', Boolean(current));
+  }
+
+  applyReaction(entryId, emoji) {
+    const clean = REACTIONS.some((reaction) => reaction.emoji === emoji) ? emoji : '';
+    this.reactions = {
+      ...this.reactions,
+      [entryId]: { emoji: clean, updatedAt: new Date().toISOString() },
+    };
+    for (const section of this.track.querySelectorAll('.chapter-reaction')) {
+      if (section.dataset.entryId === entryId) this.refreshReactionBlock(section, entryId);
+    }
+    this.callbacks.onReact?.(entryId, clean);
   }
 
   makeParagraph(block, text, continuation) {
@@ -722,6 +816,28 @@ export class Reader {
     this.stage.addEventListener('click', (event) => this.onStageClick(event));
     this.track.addEventListener('click', (event) => {
       if (Date.now() < this.suppressClickUntil) return;
+      const reactionOption = event.target.closest('[data-react-emoji]');
+      if (reactionOption) {
+        event.preventDefault();
+        event.stopPropagation();
+        const section = reactionOption.closest('.chapter-reaction');
+        if (!section) return;
+        const entryId = section.dataset.entryId;
+        const current = this.reactions[entryId]?.emoji || '';
+        const next = reactionOption.dataset.reactEmoji === current
+          ? ''
+          : reactionOption.dataset.reactEmoji;
+        this.applyReaction(entryId, next);
+        return;
+      }
+      const clearReaction = event.target.closest('[data-clear-reaction]');
+      if (clearReaction) {
+        event.preventDefault();
+        event.stopPropagation();
+        const section = clearReaction.closest('.chapter-reaction');
+        if (section) this.applyReaction(section.dataset.entryId, '');
+        return;
+      }
       const imageButton = event.target.closest('[data-view-image]');
       if (!imageButton) return;
       event.preventDefault();

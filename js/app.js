@@ -23,7 +23,7 @@ import {
   sealSecrets,
   unlockVault,
   zeroBytes,
-} from './crypto.js?v=1.4.0';
+} from './crypto.js?v=1.5.0';
 import {
   cacheConfig,
   ConfigError,
@@ -31,9 +31,10 @@ import {
   fetchConfig,
   lastSyncAt,
   readCachedConfig,
-} from './repository.js?v=1.4.0';
+} from './repository.js?v=1.5.0';
 import {
   MOODS,
+  REACTIONS,
   WEATHERS,
   cnNumber,
   countChars,
@@ -53,6 +54,7 @@ import {
   readingMinutes,
   recordStatsView,
   relativeDay,
+  setReaction,
   sortEntries,
   streakDays,
   todayKey,
@@ -61,14 +63,22 @@ import {
   weekdayOf,
   weatherOf,
   mergePayloads,
-} from './model.js?v=1.4.0';
-import { GitHubClient } from './github.js?v=1.4.0';
-import { extractImageKeys } from './images.js?v=1.4.0';
-import { demoPayload } from './demo.js?v=1.4.0';
-import { Reader } from './reader.js?v=1.4.0';
+} from './model.js?v=1.5.0';
+import { GitHubClient } from './github.js?v=1.5.0';
+import { extractImageKeys } from './images.js?v=1.5.0';
+import { demoPayload } from './demo.js?v=1.5.0';
+import { Reader } from './reader.js?v=1.5.0';
+import {
+  DRAW_COLORS,
+  drawingHasInk,
+  emptyDrawing,
+  normalizeDrawing,
+  paintDrawing,
+  paintStrokeTail,
+} from './drawing.js?v=1.5.0';
 
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '1.4.0';
+const APP_VERSION = '1.5.0';
 
 const STORAGE_KEYS = {
   theme: 'tidal.theme.v1',
@@ -83,7 +93,11 @@ const THEME_COLORS = {
   day: '#eaf5ff',
   sepia: '#f7efe0',
   night: '#0d1a26',
+  mint: '#ecf7ef',
+  violet: '#f4eefc',
 };
+
+const THEMES = ['day', 'sepia', 'night', 'mint', 'violet'];
 
 const AUTO_LOCK_VALUES = [0, 5, 15, 30, 60];
 
@@ -134,6 +148,10 @@ const state = {
   statsDirty: false,
   statsCacheTimer: 0,
   statsCachePromise: null,
+  reactionSyncTimer: 0,
+  drawColor: 'ink',
+  drawErase: false,
+  drawingPad: null,
 };
 
 const MAX_IMAGES_PER_ENTRY = 24;
@@ -244,6 +262,12 @@ const dom = {
   editorBody: $('editorBody'),
   editorCount: $('editorCount'),
   draftStatus: $('draftStatus'),
+  drawingCanvas: $('drawingCanvas'),
+  drawingColors: $('drawingColors'),
+  drawingEraser: $('drawingEraser'),
+  drawingUndo: $('drawingUndo'),
+  drawingClear: $('drawingClear'),
+  drawingStatus: $('drawingStatus'),
 
   imageViewer: $('imageViewer'),
   imageViewerImg: $('imageViewerImg'),
@@ -363,7 +387,7 @@ async function boot() {
 function readLocalSettings() {
   try {
     const theme = localStorage.getItem(STORAGE_KEYS.theme);
-    state.theme = ['day', 'sepia', 'night'].includes(theme) ? theme : 'day';
+    state.theme = THEMES.includes(theme) ? theme : 'day';
     const savedFont = localStorage.getItem(STORAGE_KEYS.fontSize);
     const font = savedFont === null ? Number.NaN : Number(savedFont);
     state.fontSize = Number.isFinite(font) ? Math.max(15, Math.min(24, font)) : 18;
@@ -1010,6 +1034,7 @@ function initReader() {
       onPrevEntry: (index) => openAdjacentEntry(index - 1, 'prev'),
       onOpenEntry: (id) => openReader(id, { history: 'replace' }),
       onViewImage: (id) => openReaderImageViewer(id),
+      onReact: (entryId, emoji) => handleReaderReaction(entryId, emoji),
       onBoundary: (message) => toast(message, { tone: 'info', duration: 1800 }),
       onProgress: ({ entry }) => {
         try {
@@ -1037,6 +1062,7 @@ async function openReader(entryId, { history = 'push', direction = '', atEnd = f
   }
 
   reader.setEntries(entries);
+  reader.setReactions(state.payload.reactions || {});
   setView('reader');
   closeReaderPopovers();
   document.body.classList.add('reader-open');
@@ -1230,7 +1256,11 @@ async function openEditor(entryId = null, { history = 'push', returnTo = 'shelf'
   const draft = state.loadedDraft;
   let useDraft = false;
   let content = existing
-    ? { ...existing, images: Array.isArray(existing.images) ? [...existing.images] : [] }
+    ? {
+        ...existing,
+        images: Array.isArray(existing.images) ? [...existing.images] : [],
+        drawing: normalizeDrawing(existing.drawing),
+      }
     : {
         id: null,
         date: todayKey(),
@@ -1239,6 +1269,7 @@ async function openEditor(entryId = null, { history = 'push', returnTo = 'shelf'
         mood: 'calm',
         weather: '',
         images: [],
+        drawing: emptyDrawing(),
         createdAt: new Date().toISOString(),
         updatedAt: null,
       };
@@ -1248,14 +1279,16 @@ async function openEditor(entryId = null, { history = 'push', returnTo = 'shelf'
     const draftImages = Array.isArray(draft.images)
       ? draft.images
       : existing?.images || [];
+    const draftDrawing = normalizeDrawing(draft.drawing);
     const differs =
       draft.title !== (existing?.title || '') ||
       draft.body !== (existing?.body || '') ||
       draft.mood !== (existing?.mood || '') ||
       draft.weather !== (existing?.weather || '') ||
       draft.date !== (existing?.date || todayKey()) ||
-      JSON.stringify(draftImages) !== JSON.stringify(existing?.images || []);
-    if (baseMatches && differs && (draft.title || draft.body)) {
+      JSON.stringify(draftImages) !== JSON.stringify(existing?.images || []) ||
+      JSON.stringify(draftDrawing) !== JSON.stringify(normalizeDrawing(existing?.drawing));
+    if (baseMatches && differs && (draft.title || draft.body || drawingHasInk(draftDrawing))) {
       content = {
         ...content,
         title: draft.title || '',
@@ -1264,6 +1297,7 @@ async function openEditor(entryId = null, { history = 'push', returnTo = 'shelf'
         weather: draft.weather || '',
         date: draft.date || content.date,
         images: draftImages,
+        drawing: draftDrawing,
       };
       useDraft = true;
     }
@@ -1285,6 +1319,7 @@ async function openEditor(entryId = null, { history = 'push', returnTo = 'shelf'
           key: Number(ref.key) || index + 1,
         }))
       : [],
+    drawing: normalizeDrawing(content.drawing),
     dirty: useDraft,
     saving: false,
     imageBusy: false,
@@ -1306,6 +1341,8 @@ async function openEditor(entryId = null, { history = 'push', returnTo = 'shelf'
   if (useDraft) dom.editorSaveState.classList.add('is-dirty');
   updateEditorChips();
   updateEditorNumber();
+  resetDrawingTools();
+  renderEditorDrawing();
   updateEditorCount();
   autoGrowEditor();
   window.setTimeout(autoGrowEditor, 60);
@@ -1349,15 +1386,164 @@ function updateEditorChips() {
 function updateEditorCount() {
   const body = dom.editorBody.value;
   const count = countChars(body);
-  dom.editorCount.textContent = count
-    ? `${count} 字 · 约 ${readingMinutes(body)} 分钟`
-    : '0 字';
+  const hasDrawing = drawingHasInk(state.editor?.drawing);
+  const base = count ? `${count} 字 · 约 ${readingMinutes(body)} 分钟` : '0 字';
+  dom.editorCount.textContent = hasDrawing ? `${base} · 有涂鸦` : base;
 }
 
 function autoGrowEditor() {
   if (state.view !== 'editor') return;
   dom.editorBody.style.height = 'auto';
   dom.editorBody.style.height = `${Math.max(window.innerHeight * 0.45, dom.editorBody.scrollHeight + 8)}px`;
+}
+
+/* --------------------------------- 涂鸦逻辑 -------------------------------- */
+
+function buildDrawingColors() {
+  if (!dom.drawingColors) return;
+  dom.drawingColors.replaceChildren();
+  for (const color of DRAW_COLORS) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.className = 'drawing-color';
+    button.dataset.drawColor = color.key;
+    button.style.setProperty('--swatch', color.value);
+    button.title = color.label;
+    button.setAttribute('aria-label', `画笔颜色：${color.label}`);
+    dom.drawingColors.appendChild(button);
+  }
+}
+
+function updateDrawingToolsUI() {
+  dom.drawingColors?.querySelectorAll('[data-draw-color]').forEach((button) => {
+    const active = !state.drawErase && button.dataset.drawColor === state.drawColor;
+    button.classList.toggle('is-active', active);
+    button.setAttribute('aria-pressed', active ? 'true' : 'false');
+  });
+  if (dom.drawingEraser) {
+    dom.drawingEraser.classList.toggle('is-active', state.drawErase);
+    dom.drawingEraser.setAttribute('aria-pressed', state.drawErase ? 'true' : 'false');
+  }
+}
+
+function resetDrawingTools() {
+  state.drawColor = 'ink';
+  state.drawErase = false;
+  state.drawingPad = null;
+  updateDrawingToolsUI();
+}
+
+function updateDrawingStatus() {
+  if (!dom.drawingStatus || !state.editor) return;
+  const count = state.editor.drawing?.strokes?.length || 0;
+  dom.drawingStatus.textContent = count
+    ? `${count} 笔 · 会随这一页一起保存`
+    : '留白也可以 · 手指或鼠标都能画';
+}
+
+function renderEditorDrawing() {
+  if (!state.editor || !dom.drawingCanvas) return;
+  paintDrawing(dom.drawingCanvas, state.editor.drawing);
+  updateDrawingStatus();
+  updateDrawingToolsUI();
+}
+
+function markDrawingChanged() {
+  if (!state.editor) return;
+  state.editor.dirty = true;
+  dom.editorSaveState.textContent = '未保存';
+  dom.editorSaveState.classList.add('is-dirty');
+  updateEditorCount();
+  updateDrawingStatus();
+  scheduleDraft();
+}
+
+function drawingPoint(event) {
+  const rect = dom.drawingCanvas.getBoundingClientRect();
+  const x = ((event.clientX - rect.left) / Math.max(1, rect.width)) * 1000;
+  const y = ((event.clientY - rect.top) / Math.max(1, rect.height)) * 600;
+  return [
+    Math.round(Math.min(1000, Math.max(0, x)) * 10) / 10,
+    Math.round(Math.min(600, Math.max(0, y)) * 10) / 10,
+  ];
+}
+
+function onDrawingPointerDown(event) {
+  if (!state.editor || state.editor.saving || !dom.drawingCanvas) return;
+  if (event.pointerType === 'mouse' && event.button !== 0) return;
+  event.preventDefault();
+  if (!state.editor.drawing) state.editor.drawing = emptyDrawing();
+  if (!Array.isArray(state.editor.drawing.strokes)) state.editor.drawing.strokes = [];
+
+  const stroke = {
+    color: state.drawColor,
+    width: state.drawErase ? 26 : 4,
+    erase: state.drawErase,
+    points: [drawingPoint(event)],
+  };
+  state.editor.drawing.strokes.push(stroke);
+  state.drawingPad = {
+    pointerId: event.pointerId,
+    stroke,
+    last: stroke.points[0],
+  };
+  dom.drawingCanvas.setPointerCapture?.(event.pointerId);
+  paintDrawing(dom.drawingCanvas, state.editor.drawing);
+  markDrawingChanged();
+}
+
+function onDrawingPointerMove(event) {
+  const pad = state.drawingPad;
+  if (!pad || pad.pointerId !== event.pointerId || !state.editor) return;
+  event.preventDefault();
+  const point = drawingPoint(event);
+  const dx = point[0] - pad.last[0];
+  const dy = point[1] - pad.last[1];
+  if (dx * dx + dy * dy < 0.64) return;
+  if (pad.stroke.points.length >= 600) return;
+  pad.stroke.points.push(point);
+  pad.last = point;
+  const ctx = dom.drawingCanvas.getContext('2d');
+  if (ctx) paintStrokeTail(ctx, pad.stroke);
+  markDrawingChanged();
+}
+
+function endDrawingStroke(event) {
+  const pad = state.drawingPad;
+  if (!pad || (event && pad.pointerId !== event.pointerId)) return;
+  if (event && dom.drawingCanvas.hasPointerCapture?.(event.pointerId)) {
+    dom.drawingCanvas.releasePointerCapture(event.pointerId);
+  }
+  state.drawingPad = null;
+}
+
+function undoDrawing() {
+  if (!state.editor || state.drawingPad) return;
+  const strokes = state.editor.drawing?.strokes;
+  if (!Array.isArray(strokes) || !strokes.length) {
+    toast('还没有可以撤销的笔画。', { tone: 'info', duration: 1800 });
+    return;
+  }
+  strokes.pop();
+  paintDrawing(dom.drawingCanvas, state.editor.drawing);
+  markDrawingChanged();
+}
+
+async function clearDrawing() {
+  if (!state.editor || state.drawingPad) return;
+  if (!drawingHasInk(state.editor.drawing)) return;
+  const ok = await confirmAction({
+    eyebrow: 'CLEAR THE SKETCH',
+    title: '把这幅涂鸦擦干净吗？',
+    message: '这一页的文字不会受影响，但画下的线条会被全部清空。',
+    okLabel: '擦干净',
+    cancelLabel: '再想想',
+    danger: true,
+  });
+  if (!ok || !state.editor) return;
+  state.editor.drawing = emptyDrawing();
+  paintDrawing(dom.drawingCanvas, state.editor.drawing);
+  markDrawingChanged();
 }
 
 /* --------------------------------- 配图逻辑 -------------------------------- */
@@ -1482,6 +1668,7 @@ async function saveDraftNow() {
     mood: editor.mood,
     weather: editor.weather,
     images: (editor.images || []).map(serializeImageRef),
+    drawing: normalizeDrawing(editor.drawing),
     savedAt: new Date().toISOString(),
   };
   const seq = ++state.draftSeq;
@@ -1556,6 +1743,30 @@ function recordEntryView(entryId) {
   state.payload = { ...state.payload, stats };
   state.statsDirty = true;
   scheduleStatsCache();
+}
+
+function handleReaderReaction(entryId, emoji) {
+  if (!state.payload || !entryId) return;
+  const reactions = setReaction(state.payload.reactions, entryId, emoji);
+  state.payload = {
+    ...state.payload,
+    reactions,
+    updatedAt: new Date().toISOString(),
+  };
+  reader?.setReactions(reactions);
+
+  if (state.demoMode) {
+    state.demoSnapshot = state.payload;
+    return;
+  }
+
+  // 先写本机加密缓存；短暂停留后自动同步，连续点选不会产生多次提交。
+  state.repo?.cachePayload(state.payload).catch(() => {});
+  window.clearTimeout(state.reactionSyncTimer);
+  state.reactionSyncTimer = window.setTimeout(() => {
+    if (!state.authenticated) return;
+    syncNow({ silent: true, message: 'diary: 更新读后表情' });
+  }, 1200);
 }
 
 function scheduleStatsCache() {
@@ -1968,8 +2179,9 @@ async function handleEditorSave() {
   const editor = state.editor;
   const title = dom.editorTitle.value.trim();
   const body = dom.editorBody.value.replace(/\r\n/g, '\n').replace(/\s+$/g, '');
-  if (!title && !body.trim()) {
-    toast('先写一句话，再收好这一页。', { tone: 'warn' });
+  const drawing = drawingHasInk(editor.drawing) ? normalizeDrawing(editor.drawing) : null;
+  if (!title && !body.trim() && !drawing) {
+    toast('先写一句话，或画下点什么，再收好这一页。', { tone: 'warn' });
     dom.editorBody.focus();
     return;
   }
@@ -1993,6 +2205,7 @@ async function handleEditorSave() {
     mood: editor.mood || '',
     weather: editor.weather || '',
     images,
+    drawing,
     createdAt: editor.createdAt || now,
     updatedAt: now,
   };
@@ -2000,6 +2213,7 @@ async function handleEditorSave() {
   try {
     state.payload = upsertEntry(state.payload, entry);
     reader.setEntries(sortEntries(state.payload.entries));
+    reader.setReactions(state.payload.reactions || {});
     // 提交信息不包含日记标题，避免公开仓库的提交记录泄露内容线索。
     const message = 'diary: 更新一页';
 
@@ -2062,6 +2276,7 @@ async function handleEditorDelete() {
   state.payload = deleteEntry(state.payload, id);
   await discardDeletedImages(deletedImages);
   reader.setEntries(sortEntries(state.payload.entries));
+  reader.setReactions(state.payload.reactions || {});
   clearDraft();
   state.editor = null;
   reader.close();
@@ -2122,6 +2337,7 @@ async function syncNow({
         state.tokenInvalid = false;
         state.lastError = '';
         reader.setEntries(sortEntries(state.payload.entries));
+        reader.setReactions(state.payload.reactions || {});
         if (state.view === 'shelf') renderShelf();
         if (state.view === 'admin') renderAdmin();
         renderStatus();
@@ -2192,7 +2408,7 @@ function renderSettingsState() {
 }
 
 function applyTheme(theme, { silent = false } = {}) {
-  const value = ['day', 'sepia', 'night'].includes(theme) ? theme : 'day';
+  const value = THEMES.includes(theme) ? theme : 'day';
   state.theme = value;
   document.documentElement.dataset.theme = value;
   try {
@@ -2306,6 +2522,12 @@ function exportMarkdown() {
         '',
       );
     }
+    if (drawingHasInk(entry.drawing)) {
+      lines.push('> 这一页留有一幅涂鸦，在网页里可以查看。', '');
+    }
+    const reactionEmoji = state.payload.reactions?.[entry.id]?.emoji || '';
+    const reaction = REACTIONS.find((item) => item.emoji === reactionEmoji);
+    if (reaction) lines.push(`> 读完这一页的心情：${reaction.emoji} ${reaction.label}`, '');
   }
   downloadText(
     `tidal-diary-${todayKey().replace(/-/g, '')}.md`,
@@ -2676,7 +2898,9 @@ async function lockApp({ reason = 'manual' } = {}) {
   state.adminAttempts = 0;
   state.adminLockedUntil = 0;
   window.clearTimeout(state.statsCacheTimer);
+  window.clearTimeout(state.reactionSyncTimer);
   state.statsDirty = false;
+  state.drawingPad = null;
   state.authenticated = false;
   state.lockWasAuto = reason === 'auto';
   const demoSnapshot = state.demoMode ? state.payload : null;
@@ -2749,6 +2973,7 @@ function delay(ms) {
 /* --------------------------------- 交互绑定 -------------------------------- */
 
 function bindEvents() {
+  buildDrawingColors();
   dom.unlockForm.addEventListener('submit', handleUnlock);
   dom.togglePassword.addEventListener('click', togglePasswordVisibility);
   dom.demoButton.addEventListener('click', () => {
@@ -2847,6 +3072,26 @@ function bindEvents() {
   });
   dom.moodPicker.addEventListener('click', (event) => toggleEditorChip(event, 'mood'));
   dom.weatherPicker.addEventListener('click', (event) => toggleEditorChip(event, 'weather'));
+
+  dom.drawingColors.addEventListener('click', (event) => {
+    const button = event.target.closest('[data-draw-color]');
+    if (!button) return;
+    state.drawColor = button.dataset.drawColor;
+    state.drawErase = false;
+    updateDrawingToolsUI();
+  });
+  dom.drawingEraser.addEventListener('click', () => {
+    state.drawErase = !state.drawErase;
+    updateDrawingToolsUI();
+  });
+  dom.drawingUndo.addEventListener('click', undoDrawing);
+  dom.drawingClear.addEventListener('click', () => {
+    clearDrawing().catch(() => {});
+  });
+  dom.drawingCanvas.addEventListener('pointerdown', onDrawingPointerDown);
+  dom.drawingCanvas.addEventListener('pointermove', onDrawingPointerMove);
+  dom.drawingCanvas.addEventListener('pointerup', endDrawingStroke);
+  dom.drawingCanvas.addEventListener('pointercancel', endDrawingStroke);
 
   dom.imageViewerClose.addEventListener('click', closeImageViewer);
   dom.imageViewer.addEventListener('click', (event) => {

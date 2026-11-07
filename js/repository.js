@@ -7,9 +7,9 @@ import {
   encryptPayload,
   isDataEnvelope,
   normalizePayload,
-} from './crypto.js?v=1.4.0';
-import { GitHubClient, GitHubError, repoFromLocation } from './github.js?v=1.4.0';
-import { hasMeaningfulDifference, mergePayloads } from './model.js?v=1.4.0';
+} from './crypto.js?v=1.5.0';
+import { GitHubClient, GitHubError, repoFromLocation } from './github.js?v=1.5.0';
+import { hasMeaningfulDifference, mergePayloads } from './model.js?v=1.5.0';
 
 export const CONFIG_CACHE_KEY = 'tidal.config.v1';
 export const DATA_CACHE_KEY = 'tidal.data.v1';
