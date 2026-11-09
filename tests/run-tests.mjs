@@ -264,6 +264,18 @@ assert.equal(sketch.strokes[1].color, 'ink');
 assert.equal(drawingHasInk(sketch), true);
 assert.equal(drawingHasInk(emptyDrawing()), false);
 
+// 涂鸦不再限制笔数或单笔点数：长笔画、很多笔都要完整保留
+const longStroke = Array.from({ length: 1400 }, (_, index) => [index % 1000, (index * 3) % 600]);
+const manyStrokes = Array.from({ length: 140 }, (_, index) => ({
+  color: 'blue',
+  width: 4,
+  points: index === 0 ? longStroke : [[index, index], [index + 1, index + 1]],
+}));
+const unlimitedSketch = normalizeSketch({ version: 1, strokes: manyStrokes });
+assert.equal(unlimitedSketch.strokes.length, 140);
+assert.equal(unlimitedSketch.strokes[0].points.length, 1400);
+assert.equal(unlimitedSketch.strokes[139].points.length, 2);
+
 // 兼容旧版仓库内配图（新增配图功能已停用，只保留只读显示）
 fake.imageFiles.set('data/images/image-legacy.bin', packedImage);
 const legacyImage = await repo.loadImage({

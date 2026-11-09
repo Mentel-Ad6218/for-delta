@@ -15,9 +15,9 @@ import {
   REACTIONS,
   weekdayOf,
   weatherOf,
-} from './model.js?v=1.5.0';
-import { IMAGE_TOKEN_PATTERN } from './images.js?v=1.5.0';
-import { drawingHasInk, normalizeDrawing, paintDrawing } from './drawing.js?v=1.5.0';
+} from './model.js?v=2.0.0';
+import { IMAGE_TOKEN_PATTERN } from './images.js?v=2.0.0';
+import { drawingHasInk, normalizeDrawing, paintDrawing } from './drawing.js?v=2.0.0';
 
 const PROGRESS_KEY = 'tidal.progress.v1';
 const SPLIT_TAGS = new Set(['P']);

@@ -8,7 +8,7 @@
  *  - 所有密钥材料只在浏览器内存里出现，不发送给任何第三方。
  */
 
-import { normalizeReactions, normalizeSettings, normalizeStats } from './model.js?v=1.5.0';
+import { normalizeReactions, normalizeSettings, normalizeStats } from './model.js?v=2.0.0';
 
 export const DEFAULT_ITERATIONS = 310_000;
 export const MIN_ITERATIONS = 120_000;

@@ -3,7 +3,7 @@
  * config.json 永远不缓存，避免密码更换后读到旧配置。
  */
 
-const VERSION = 'tidal-v1.5.0';
+const VERSION = 'tidal-v2.0.0';
 const SCOPE = self.registration.scope;
 
 const CORE_FILES = [

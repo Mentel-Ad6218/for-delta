@@ -3410,10 +3410,23 @@ html[data-theme="night"] .body-image-button img {
   flex: 1;
   overflow-y: auto;
   overscroll-behavior: contain;
+  overflow-anchor: none;
+  scroll-padding-bottom: 18vh;
   padding: 28px 20px 60px;
   display: flex;
   flex-direction: column;
   align-items: center;
+}
+
+/* 只用于量正文高度，不参与布局，也不会被读屏或搜索看到。 */
+.editor-measure {
+  position: fixed;
+  top: 0;
+  left: -100000px;
+  z-index: -1;
+  visibility: hidden;
+  pointer-events: none;
+  white-space: pre-wrap;
 }
 
 .editor-paper {

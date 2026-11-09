@@ -15,9 +15,6 @@ export const DRAW_COLORS = [
 ];
 
 const COLOR_MAP = new Map(DRAW_COLORS.map((color) => [color.key, color.value]));
-const MAX_STROKES = 90;
-const MAX_POINTS = 6000;
-const MAX_POINTS_PER_STROKE = 600;
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value));
@@ -39,32 +36,29 @@ export function emptyDrawing() {
 
 /**
  * 清理外部数据（导入的备份、旧草稿）里的涂鸦。
- * 限制笔画数量与坐标范围，避免异常数据拖慢分页。
+ * 只清理非法坐标与字段，不限制笔画数量或单笔长度：
+ * 涂鸦是这一页的一部分，应该允许一直画到自己满意为止。
  */
 export function normalizeDrawing(raw) {
   const source = raw && typeof raw === 'object' ? raw : null;
   const strokes = [];
   if (!source || !Array.isArray(source.strokes)) return emptyDrawing();
 
-  let totalPoints = 0;
-  for (const rawStroke of source.strokes.slice(0, MAX_STROKES)) {
+  for (const rawStroke of source.strokes) {
     if (!rawStroke || typeof rawStroke !== 'object' || !Array.isArray(rawStroke.points)) continue;
-    if (totalPoints >= MAX_POINTS) break;
 
     const points = [];
-    for (const point of rawStroke.points.slice(0, MAX_POINTS_PER_STROKE)) {
-      if (totalPoints + points.length >= MAX_POINTS) break;
+    for (const point of rawStroke.points) {
       const [x, y] = readPoint(point);
       if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
       points.push([round(clamp(x, 0, DRAWING_WIDTH)), round(clamp(y, 0, DRAWING_HEIGHT))]);
     }
     if (!points.length) continue;
-    totalPoints += points.length;
 
     const color = COLOR_MAP.has(rawStroke.color) ? rawStroke.color : 'ink';
     strokes.push({
       color,
-      width: round(clamp(Number(rawStroke.width) || 4, 1, 24)),
+      width: round(clamp(Number(rawStroke.width) || 4, 1, 40)),
       erase: rawStroke.erase === true,
       points,
     });

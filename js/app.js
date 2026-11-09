@@ -23,7 +23,7 @@ import {
   sealSecrets,
   unlockVault,
   zeroBytes,
-} from './crypto.js?v=1.5.0';
+} from './crypto.js?v=2.0.0';
 import {
   cacheConfig,
   ConfigError,
@@ -31,7 +31,7 @@ import {
   fetchConfig,
   lastSyncAt,
   readCachedConfig,
-} from './repository.js?v=1.5.0';
+} from './repository.js?v=2.0.0';
 import {
   MOODS,
   REACTIONS,
@@ -63,22 +63,23 @@ import {
   weekdayOf,
   weatherOf,
   mergePayloads,
-} from './model.js?v=1.5.0';
-import { GitHubClient } from './github.js?v=1.5.0';
-import { extractImageKeys } from './images.js?v=1.5.0';
-import { demoPayload } from './demo.js?v=1.5.0';
-import { Reader } from './reader.js?v=1.5.0';
+} from './model.js?v=2.0.0';
+import { GitHubClient } from './github.js?v=2.0.0';
+import { extractImageKeys } from './images.js?v=2.0.0';
+import { demoPayload } from './demo.js?v=2.0.0';
+import { Reader } from './reader.js?v=2.0.0';
 import {
   DRAW_COLORS,
   drawingHasInk,
   emptyDrawing,
   normalizeDrawing,
   paintDrawing,
+  paintStroke,
   paintStrokeTail,
-} from './drawing.js?v=1.5.0';
+} from './drawing.js?v=2.0.0';
 
 const $ = (id) => document.getElementById(id);
-const APP_VERSION = '1.5.0';
+const APP_VERSION = '2.0.0';
 
 const STORAGE_KEYS = {
   theme: 'tidal.theme.v1',
@@ -964,6 +965,7 @@ function formatSyncTime(iso) {
 
 function setView(name) {
   state.view = name;
+  if (name !== 'editor' && editorMeasureNode) editorMeasureNode.textContent = '';
   dom.shelf.hidden = name !== 'shelf';
   dom.reader.hidden = name !== 'reader';
   dom.editor.hidden = name !== 'editor';
@@ -1391,10 +1393,64 @@ function updateEditorCount() {
   dom.editorCount.textContent = hasDrawing ? `${base} · 有涂鸦` : base;
 }
 
+let editorMeasureNode = null;
+
+/**
+ * 用一个不可见的镜像节点量正文高度。
+ * 不能先把 textarea 的 height 设为 auto 再读 scrollHeight：
+ * 长文时这一下会让编辑器滚动容器瞬间变矮，浏览器把 scrollTop
+ * 拉回顶部，所以每输入一个字都会“复位到最顶”。
+ */
+function measureEditorBodyHeight() {
+  const source = dom.editorBody;
+  if (!source) return 0;
+  if (!editorMeasureNode) {
+    editorMeasureNode = document.createElement('div');
+    editorMeasureNode.className = 'editor-measure';
+    editorMeasureNode.setAttribute('aria-hidden', 'true');
+    document.body.appendChild(editorMeasureNode);
+  }
+
+  const style = window.getComputedStyle(source);
+  const mirror = editorMeasureNode;
+  const copied = [
+    'fontFamily',
+    'fontSize',
+    'fontStyle',
+    'fontWeight',
+    'fontVariant',
+    'letterSpacing',
+    'lineHeight',
+    'textAlign',
+    'textIndent',
+    'textTransform',
+    'wordSpacing',
+    'tabSize',
+    'direction',
+    'whiteSpace',
+  ];
+  for (const property of copied) mirror.style[property] = style[property] || '';
+  mirror.style.width = `${source.clientWidth}px`;
+  mirror.style.boxSizing = 'border-box';
+  mirror.style.padding = '0';
+  mirror.style.border = '0';
+  mirror.style.height = 'auto';
+  mirror.style.overflowWrap = 'break-word';
+  mirror.style.wordBreak = 'break-word';
+  mirror.textContent = `${source.value}\n`;
+  return mirror.scrollHeight;
+}
+
 function autoGrowEditor() {
-  if (state.view !== 'editor') return;
-  dom.editorBody.style.height = 'auto';
-  dom.editorBody.style.height = `${Math.max(window.innerHeight * 0.45, dom.editorBody.scrollHeight + 8)}px`;
+  if (state.view !== 'editor' || !dom.editorBody) return;
+  const width = dom.editorBody.clientWidth;
+  if (!width) return;
+  const measured = measureEditorBodyHeight();
+  const next = Math.max(window.innerHeight * 0.45, measured + 8);
+  const current = Number.parseFloat(dom.editorBody.style.height) || 0;
+  if (Math.abs(next - current) >= 1) {
+    dom.editorBody.style.height = `${next}px`;
+  }
 }
 
 /* --------------------------------- 涂鸦逻辑 -------------------------------- */
@@ -1488,7 +1544,10 @@ function onDrawingPointerDown(event) {
     last: stroke.points[0],
   };
   dom.drawingCanvas.setPointerCapture?.(event.pointerId);
-  paintDrawing(dom.drawingCanvas, state.editor.drawing);
+  // 画布上已经有之前的笔画，只画这一笔的起点即可。
+  // 不再每落一笔就重绘整幅画，画很多笔时也不会卡顿。
+  const ctx = dom.drawingCanvas.getContext('2d');
+  if (ctx) paintStroke(ctx, stroke);
   markDrawingChanged();
 }
 
@@ -1499,8 +1558,8 @@ function onDrawingPointerMove(event) {
   const point = drawingPoint(event);
   const dx = point[0] - pad.last[0];
   const dy = point[1] - pad.last[1];
-  if (dx * dx + dy * dy < 0.64) return;
-  if (pad.stroke.points.length >= 600) return;
+  // 约等于屏幕上的一个像素：保留手写细节，同时避免一笔里堆积过多点。
+  if (dx * dx + dy * dy < 4) return;
   pad.stroke.points.push(point);
   pad.last = point;
   const ctx = dom.drawingCanvas.getContext('2d');
@@ -2926,6 +2985,7 @@ async function lockApp({ reason = 'manual' } = {}) {
   state.tokenInvalid = false;
   state.lastError = '';
   state.editor = null;
+  if (editorMeasureNode) editorMeasureNode.textContent = '';
   state.currentReaderId = null;
   state.loadedDraft = null;
   state.query = '';
